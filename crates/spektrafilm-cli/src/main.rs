@@ -428,10 +428,8 @@ fn load_image(path: &Path) -> Result<ImageBuf> {
         "png" => load_png(path),
         // Camera RAW formats — same set as the GUI's loader.
         "dng" | "cr2" | "cr3" | "nef" | "nrw" | "arw" | "srf" | "sr2" | "raf" | "orf" | "rw2"
-        | "pef" | "srw" | "x3f" | "iiq" | "3fr" | "crw" | "rwl" | "mrw" | "mef" | "kdc"
-        | "ari" | "bay" | "dcr" | "drf" | "erf" | "fff" | "k25" | "mos" | "ptx" => {
-            load_raw(path)
-        }
+        | "pef" | "srw" | "x3f" | "iiq" | "3fr" | "crw" | "rwl" | "mrw" | "mef" | "kdc" | "ari"
+        | "bay" | "dcr" | "drf" | "erf" | "fff" | "k25" | "mos" | "ptx" => load_raw(path),
         _ => bail!("unsupported image format: .{ext} (supported: tiff, png, raw)"),
     }
 }
@@ -444,10 +442,12 @@ fn load_image(path: &Path) -> Result<ImageBuf> {
 /// the GUI preview. They must share a decoder for the export to match
 /// the preview byte-for-byte at the input boundary.
 fn load_raw(path: &Path) -> Result<ImageBuf> {
-    use rawler::{decode_file, imgop::develop::{ProcessingStep, RawDevelop}};
+    use rawler::{
+        decode_file,
+        imgop::develop::{ProcessingStep, RawDevelop},
+    };
     use rayon::prelude::*;
-    let raw = decode_file(path)
-        .map_err(|e| anyhow::anyhow!("RAW decode failed: {e:?}"))?;
+    let raw = decode_file(path).map_err(|e| anyhow::anyhow!("RAW decode failed: {e:?}"))?;
     let mut dev = RawDevelop::default();
     // Drop the sRGB gamma step — we want linear sRGB primaries; the
     // spektrafilm pipeline applies its own sRGB OETF at the very end.
@@ -469,8 +469,23 @@ fn load_raw(path: &Path) -> Result<ImageBuf> {
     Ok(ImageBuf::from_data(w, h, scalars))
 }
 
+/// Decode an image with the decoder's memory limits disabled. The
+/// `image` crate caps allocation at 512 MiB by default, which rejects
+/// large float TIFFs (a 60 MP 32-bit RGB frame alone is ~720 MiB). We
+/// trust local files, so lift the cap.
+fn decode_no_limits(path: &Path) -> Result<image::DynamicImage> {
+    let mut reader = image::ImageReader::open(path)
+        .with_context(|| format!("opening image: {}", path.display()))?
+        .with_guessed_format()
+        .with_context(|| format!("detecting image format: {}", path.display()))?;
+    reader.no_limits();
+    reader
+        .decode()
+        .with_context(|| format!("decoding image: {}", path.display()))
+}
+
 fn load_tiff(path: &Path) -> Result<ImageBuf> {
-    let img = image::open(path).with_context(|| format!("opening image: {}", path.display()))?;
+    let img = decode_no_limits(path)?;
     let rgb = img.to_rgb32f();
     let (w, h) = (rgb.width(), rgb.height());
     let data: Vec<f32> = rgb.into_raw();
@@ -482,7 +497,7 @@ fn load_tiff(path: &Path) -> Result<ImageBuf> {
 }
 
 fn load_png(path: &Path) -> Result<ImageBuf> {
-    let img = image::open(path).with_context(|| format!("opening image: {}", path.display()))?;
+    let img = decode_no_limits(path)?;
     let rgb = img.to_rgb32f();
     let (w, h) = (rgb.width(), rgb.height());
     let data: Vec<f32> = rgb.into_raw();
@@ -543,7 +558,12 @@ fn save_jpeg(img: &ImageBuf, path: &Path) -> Result<()> {
             .with_context(|| format!("creating JPEG: {}", path.display()))?,
     );
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut file, 95)
-        .write_image(&data_u8, img.width, img.height, image::ExtendedColorType::Rgb8)
+        .write_image(
+            &data_u8,
+            img.width,
+            img.height,
+            image::ExtendedColorType::Rgb8,
+        )
         .with_context(|| format!("saving JPEG: {}", path.display()))?;
     Ok(())
 }

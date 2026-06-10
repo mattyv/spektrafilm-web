@@ -52,6 +52,7 @@ fn print_spectral_via_lut(
     print_illuminant: &[f64],
     print_sensitivity: &[[f64; 3]],
     exposure_factor: f64,
+    preflash: [f64; 3],
     backend: &dyn ComputeBackend,
     data_min: [f64; 3],
     data_max: [f64; 3],
@@ -65,6 +66,7 @@ fn print_spectral_via_lut(
         print_illuminant,
         print_sensitivity,
         exposure_factor,
+        preflash,
     );
     // Convert Scalar storage to f64 — no-op cast in precision-f64 mode,
     // a widening in f32 mode. The PCHIP slopes are computed in f64
@@ -132,7 +134,6 @@ fn enlarger_lut_bounds(film: &Profile, params: &RuntimeParams) -> ([f64; 3], [f6
     (data_min, data_max)
 }
 
-
 /// Expose with pre-calibrated illuminant and exposure factor.
 ///
 /// Mirrors Python's `printing.expose` *exactly*, including the
@@ -148,6 +149,7 @@ fn enlarger_lut_bounds(film: &Profile, params: &RuntimeParams) -> ([f64; 3], [f6
 /// print_exposure before the outer 1e-10 is added). The discrepancy
 /// is on the order of 1e-8 in log-space and is the seed of the print
 /// stage's remaining parity drift.
+#[allow(clippy::too_many_arguments)]
 pub fn expose_calibrated(
     cmy_film: &ImageBuf,
     film: &Profile,
@@ -156,6 +158,8 @@ pub fn expose_calibrated(
     backend: &dyn ComputeBackend,
     print_illuminant: &[f64],
     exposure_factor: f64,
+    preflash: [f64; 3],
+    bw_print_correction: f64,
 ) -> ImageBuf {
     // Python parity — `channel_density` and `base_density` are f64 in the profile JSON.
     let channel_density: Vec<[f64; 3]> = film
@@ -202,6 +206,7 @@ pub fn expose_calibrated(
             print_illuminant,
             &print_sensitivity,
             exposure_factor,
+            preflash,
             backend,
             data_min,
             data_max,
@@ -215,6 +220,7 @@ pub fn expose_calibrated(
             print_illuminant,
             &print_sensitivity,
             exposure_factor,
+            preflash,
         )
     };
 
@@ -231,11 +237,53 @@ pub fn expose_calibrated(
     // the same IEEE 754 pow algorithm as libm).
     const BLOCK: usize = 1 << 16;
     let print_exposure = params.enlarger.print_exposure as f64;
+    // B&W/print scanner exposure correction — Python applies it as a second
+    // in-place multiply after print_exposure, so we keep the two multiplies
+    // separate (left-to-right) rather than pre-combining the scalars. 1.0 = no-op.
+    let bw = bw_print_correction;
+
+    // Enlarger diffusion filter operates on the *linear* print raw (Python:
+    // raw = 10^log_raw_print * print_exposure * bw; raw = diffusion(raw); log10).
+    // When active we materialise that linear buffer, diffuse, then log10;
+    // otherwise the 10^x → ×exposure → log10 collapse into one pass.
+    let edf = &params.enlarger.diffusion_filter;
+    if edf.active {
+        let mut lin = log_raw_print;
+        lin.data.par_chunks_mut(BLOCK).for_each(|chunk| {
+            let mut tmp: Vec<f64> = chunk.iter().map(|&v| v as f64).collect();
+            spektrafilm_math::vforce::exp10_inplace(&mut tmp);
+            for (out, &raw) in chunk.iter_mut().zip(tmp.iter()) {
+                *out = spektrafilm_math::precision::from_f64(raw * print_exposure * bw);
+            }
+        });
+        let pix_um = crate::stages::filming::pixel_size_um(
+            params.camera.film_format_mm,
+            lin.width,
+            lin.height,
+        );
+        let dm = edf.to_model();
+        lin = if backend.is_gpu() {
+            spektrafilm_model::diffusion::apply_diffusion_filter_blur(
+                &lin,
+                &dm,
+                pix_um as f64,
+                backend,
+            )
+        } else {
+            spektrafilm_model::diffusion::apply_diffusion_filter_um(&lin, &dm, pix_um as f64)
+        };
+        lin.data.par_iter_mut().for_each(|v| {
+            let x = *v as f64;
+            *v = spektrafilm_math::precision::from_f64((x.max(0.0) + 1e-10).log10());
+        });
+        return lin;
+    }
+
     log_raw_print.data.par_chunks_mut(BLOCK).for_each(|chunk| {
         let mut tmp: Vec<f64> = chunk.iter().map(|&v| v as f64).collect();
         spektrafilm_math::vforce::exp10_inplace(&mut tmp);
         for (out, &raw) in chunk.iter_mut().zip(tmp.iter()) {
-            let v = raw * print_exposure;
+            let v = raw * print_exposure * bw;
             *out = spektrafilm_math::precision::from_f64((v.max(0.0) + 1e-10).log10());
         }
     });
@@ -248,17 +296,44 @@ pub fn develop(
     params: &RuntimeParams,
     backend: &dyn ComputeBackend,
 ) -> ImageBuf {
-    // Python parity: print's `develop` uses `develop_simple` directly with RAW (un-normalized)
-    // density curves — no nanmin subtraction. See `spektrafilm/runtime/stages/printing.py:develop`.
+    let log_exposure = print.log_exposure_f64();
+
+    // Mirrors Python `develop_print_morph`: when the profile carries a fitted
+    // `density_curves_model`, the print density curves always come from
+    // evaluating it (identity evaluation when the morph is inactive, the s023
+    // coupled-gamma morph when active), interpolated at gamma 1. Upstream
+    // 0.3.4 has no stored-curve print path at all; the fallback below covers
+    // model-less custom profiles and evaluation errors.
+    let morph = &params.print_render.density_curves_morph;
+    if let Some(model) = print.data.density_curves_model.as_ref() {
+        match crate::print_morph::morph_density_curves(
+            &log_exposure,
+            model,
+            morph,
+            print.is_positive(),
+        ) {
+            Ok(curves) => {
+                return backend.density_curve_interp(log_raw_print, &log_exposure, &curves, 1.0);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "print-curve model eval failed; using stored curves")
+            }
+        }
+    }
+
+    // Stored-curve fallback (profiles without a fitted model). Python parity
+    // note for this path: print's `develop` uses `develop_simple` directly with
+    // RAW (un-normalized) density curves — no nanmin subtraction.
     backend.density_curve_interp(
         log_raw_print,
-        &print.log_exposure_f64(),
+        &log_exposure,
         &print.density_curves_f64(),
         params.print_render.density_curve_gamma as f64,
     )
 }
 
 /// Full printing stage with pre-calibrated enlarger.
+#[allow(clippy::too_many_arguments)]
 pub fn process_with_calibration(
     cmy_film: &ImageBuf,
     film: &Profile,
@@ -267,6 +342,8 @@ pub fn process_with_calibration(
     backend: &dyn ComputeBackend,
     print_illuminant: &[f64],
     exposure_factor: f64,
+    preflash: [f64; 3],
+    bw_print_correction: f64,
 ) -> ImageBuf {
     let log_raw = expose_calibrated(
         cmy_film,
@@ -276,6 +353,8 @@ pub fn process_with_calibration(
         backend,
         print_illuminant,
         exposure_factor,
+        preflash,
+        bw_print_correction,
     );
     develop(&log_raw, print, params, backend)
 }
@@ -348,6 +427,8 @@ pub fn process(
         &illuminant,
         &print_sensitivity,
         normalization_factor,
+        // The simplified path predates calibration and has no preflash plumbing.
+        [0.0; 3],
     );
     develop(&log_raw, print, params, backend)
 }
@@ -376,7 +457,7 @@ fn compute_midgray_film_density(cmy_film: &ImageBuf) -> [f64; 3] {
     [ws[0] / wt, ws[1] / wt, ws[2] / wt]
 }
 
-fn compute_single_pixel_raw(
+pub(crate) fn compute_single_pixel_raw(
     density_cmy: &[f64; 3],
     channel_density: &[[f64; 3]],
     base_density: &[f64],

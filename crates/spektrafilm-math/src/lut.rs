@@ -72,8 +72,16 @@ pub fn bicubic_2d_f64(
     let max_y = (second_dim - 1) as f64;
     let xf = x.clamp(0.0, max_x);
     let yf = y.clamp(0.0, max_y);
-    let xi = if xf >= max_x { first_dim - 2 } else { xf as usize };
-    let yi = if yf >= max_y { second_dim - 2 } else { yf as usize };
+    let xi = if xf >= max_x {
+        first_dim - 2
+    } else {
+        xf as usize
+    };
+    let yi = if yf >= max_y {
+        second_dim - 2
+    } else {
+        yf as usize
+    };
     let fx = xf - xi as f64;
     let fy = yf - yi as f64;
     let wx = [

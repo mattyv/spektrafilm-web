@@ -23,9 +23,11 @@ fn time<F: FnOnce()>(label: &str, f: F) {
 }
 
 fn main() {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).init();
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .init();
     let backend = WgpuBackend::new().expect("wgpu");
-    let img = make_image(3000, 2000);  // 6 MP
+    let img = make_image(3000, 2000); // 6 MP
     // Three sigmas keeps the combined multi-readback under wgpu's 256 MB
     // single-buffer cap (3 × 72 MB = 216 MB).
     let sigmas = [3.0_f32, 6.0, 12.0];

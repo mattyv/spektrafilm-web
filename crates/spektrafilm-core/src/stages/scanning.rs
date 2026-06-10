@@ -6,7 +6,7 @@ use spektrafilm_gpu::ComputeBackend;
 use spektrafilm_math::colorspace;
 use spektrafilm_math::image::ImageBuf;
 use spektrafilm_math::pchip3d::{pchip_interp, prepare_pchip_3d};
-use spektrafilm_math::precision::{Scalar, from_f32, from_f64};
+use spektrafilm_math::precision::{Scalar, from_f64};
 use spektrafilm_math::spectral;
 
 use crate::params::RuntimeParams;
@@ -37,10 +37,7 @@ fn build_lut_grid(steps: usize, data_min: [f64; 3], data_max: [f64; 3]) -> Image
 /// Scanner LUT bounds. When scan_film=true: `-grain.density_min` to
 /// `nanmax(film.density_curves)`. Else: `nanmin..nanmax` of
 /// `print.density_curves`. Mirrors Python `ScanningStage._density_to_rgb`.
-fn scanner_lut_bounds(
-    profile: &Profile,
-    params: &RuntimeParams,
-) -> ([f64; 3], [f64; 3]) {
+fn scanner_lut_bounds(profile: &Profile, params: &RuntimeParams) -> ([f64; 3], [f64; 3]) {
     let curves = profile.density_curves_f64();
     let mut dmin_curves = [f64::INFINITY; 3];
     let mut dmax_curves = [f64::NEG_INFINITY; 3];
@@ -101,6 +98,7 @@ fn scan_spectral_via_lut(
     data_min: [f64; 3],
     data_max: [f64; 3],
     steps: usize,
+    color_ref: &crate::color_reference::ColorReference,
 ) -> ImageBuf {
     let grid = build_lut_grid(steps, data_min, data_max);
     // log_xyz LUT — same function Python LUTs.
@@ -130,17 +128,29 @@ fn scan_spectral_via_lut(
             // Post-LUT: 10^log_xyz → CAT → xyz_to_rgb, mirroring Python's
             // `_density_to_rgb` AFTER the LUT call. bw_correction and
             // glare run after this returns (RGB space).
-            let xyz = [
+            let mut xyz = [
                 10.0f64.powf(log_xyz[0]),
                 10.0f64.powf(log_xyz[1]),
                 10.0f64.powf(log_xyz[2]),
             ];
+            // B&W/slide luminance remap on the pre-CAT scan XYZ (Python's
+            // black_white_xyz_correction). Scalar scale from the Y channel;
+            // no-op when color_ref has no remap.
+            let scale = color_ref.xyz_scale(xyz[1]);
+            if scale != 1.0 {
+                xyz[0] *= scale;
+                xyz[1] *= scale;
+                xyz[2] *= scale;
+            }
             let xa = cat[0][0] * xyz[0] + cat[0][1] * xyz[1] + cat[0][2] * xyz[2];
             let ya = cat[1][0] * xyz[0] + cat[1][1] * xyz[1] + cat[1][2] * xyz[2];
             let za = cat[2][0] * xyz[0] + cat[2][1] * xyz[1] + cat[2][2] * xyz[2];
-            dst[0] = from_f64(xyz_to_rgb[0][0] * xa + xyz_to_rgb[0][1] * ya + xyz_to_rgb[0][2] * za);
-            dst[1] = from_f64(xyz_to_rgb[1][0] * xa + xyz_to_rgb[1][1] * ya + xyz_to_rgb[1][2] * za);
-            dst[2] = from_f64(xyz_to_rgb[2][0] * xa + xyz_to_rgb[2][1] * ya + xyz_to_rgb[2][2] * za);
+            dst[0] =
+                from_f64(xyz_to_rgb[0][0] * xa + xyz_to_rgb[0][1] * ya + xyz_to_rgb[0][2] * za);
+            dst[1] =
+                from_f64(xyz_to_rgb[1][0] * xa + xyz_to_rgb[1][1] * ya + xyz_to_rgb[1][2] * za);
+            dst[2] =
+                from_f64(xyz_to_rgb[2][0] * xa + xyz_to_rgb[2][1] * ya + xyz_to_rgb[2][2] * za);
         });
     out
 }
@@ -150,6 +160,8 @@ pub fn scan(
     profile: &Profile,
     params: &RuntimeParams,
     backend: &dyn ComputeBackend,
+    color_ref: &crate::color_reference::ColorReference,
+    gamut: &crate::gamut_compression::OutputGamutCompress,
 ) -> ImageBuf {
     // Python parity — channel_density / base_density are f64 in the JSON profile.
     let channel_density: Vec<[f64; 3]> = profile
@@ -223,7 +235,12 @@ pub fn scan(
     // grid and PCHIP-interpolate per pixel. Glare is added in RGB
     // space after this returns (the existing post-step at the bottom
     // of this function), so swapping to the LUT path is glare-safe.
-    let mut rgb = if params.settings.use_scanner_lut {
+    // The faithful B&W/slide luminance remap (color_ref.has_remap) applies
+    // per-pixel on the scan XYZ inside scan_spectral_via_lut — so route
+    // through the LUT path when it's active (the LUT result matches the
+    // direct spectral path to sub-LSB, and only this path exposes the
+    // pre-CAT XYZ hook). Otherwise honour use_scanner_lut.
+    let mut rgb = if color_ref.has_remap() || params.settings.use_scanner_lut {
         let (data_min, data_max) = scanner_lut_bounds(profile, params);
         scan_spectral_via_lut(
             density_cmy,
@@ -237,6 +254,7 @@ pub fn scan(
             data_min,
             data_max,
             params.settings.lut_resolution as usize,
+            color_ref,
         )
     } else {
         backend.scan_spectral(
@@ -250,16 +268,13 @@ pub fn scan(
         )
     };
 
-    // White/black correction
-    if params.scanner.white_correction || params.scanner.black_correction {
-        apply_white_black_correction(
-            &mut rgb,
-            params.scanner.white_level,
-            params.scanner.black_level,
-            params.scanner.white_correction,
-            params.scanner.black_correction,
-        );
-    }
+    // White/black correction is fully handled by color_ref's XYZ luminance
+    // remap (applied inside the scan paths above). For the combos where no
+    // remap is built we apply nothing: scan_film+negative because upstream
+    // Python explicitly skips it (`black_white_xyz_correction`: "do not
+    // correct negative film scans"), and a positive print paper because
+    // upstream crashes there (its printing exposure correction returns None)
+    // — unsupported, and unrepresentable with the shipped profiles anyway.
 
     // Viewing glare (Python: `add_glare(xyz, illuminant_xyz, glare)` between scan_spectral
     // and chromatic adapt + matrix). Since CAT+matrix is linear, we equivalently add
@@ -318,6 +333,17 @@ pub fn scan(
         spektrafilm_model::glare::add_glare_with_amount(&mut rgb, &glare_amount, glare_rgb_offset);
     }
 
+    // Output gamut compression — mirrors Python's `compress_rgb` after
+    // XYZ→RGB and glare, before blur/unsharp. No-op when inactive.
+    if gamut.is_active() {
+        rgb.data.par_chunks_exact_mut(3).for_each(|px| {
+            let out = gamut.compress([px[0] as f64, px[1] as f64, px[2] as f64]);
+            px[0] = from_f64(out[0]);
+            px[1] = from_f64(out[1]);
+            px[2] = from_f64(out[2]);
+        });
+    }
+
     // Lens blur
     if params.scanner.lens_blur > 0.0 {
         rgb = backend.gaussian_blur(&rgb, params.scanner.lens_blur);
@@ -326,7 +352,8 @@ pub fn scan(
     // Unsharp mask
     let [usm_sigma, usm_amount] = params.scanner.unsharp_mask;
     if usm_sigma > 0.0 && usm_amount > 0.0 {
-        rgb = spektrafilm_model::diffusion::apply_unsharp_mask(&rgb, usm_sigma, usm_amount, backend);
+        rgb =
+            spektrafilm_model::diffusion::apply_unsharp_mask(&rgb, usm_sigma, usm_amount, backend);
     }
 
     // CCTF encoding + clip.
@@ -395,48 +422,10 @@ pub fn process(
     profile: &Profile,
     params: &RuntimeParams,
     backend: &dyn ComputeBackend,
+    color_ref: &crate::color_reference::ColorReference,
+    gamut: &crate::gamut_compression::OutputGamutCompress,
 ) -> ImageBuf {
-    scan(density_cmy, profile, params, backend)
-}
-
-fn apply_white_black_correction(
-    rgb: &mut ImageBuf,
-    white_level: f32,
-    black_level: f32,
-    white_corr: bool,
-    black_corr: bool,
-) {
-    let mut ch_min: [Scalar; 3] = [Scalar::INFINITY; 3];
-    let mut ch_max: [Scalar; 3] = [Scalar::NEG_INFINITY; 3];
-    for px in rgb.pixels() {
-        for c in 0..3 {
-            if px[c] < ch_min[c] {
-                ch_min[c] = px[c];
-            }
-            if px[c] > ch_max[c] {
-                ch_max[c] = px[c];
-            }
-        }
-    }
-    let target_min = if black_corr {
-        from_f32(black_level)
-    } else {
-        ch_min[0].min(ch_min[1]).min(ch_min[2])
-    };
-    let target_max = if white_corr {
-        from_f32(white_level)
-    } else {
-        ch_max[0].max(ch_max[1]).max(ch_max[2])
-    };
-    let current_min = ch_min[0].min(ch_min[1]).min(ch_min[2]);
-    let current_max = ch_max[0].max(ch_max[1]).max(ch_max[2]);
-    let range = current_max - current_min;
-    if range > from_f64(1e-6) {
-        let scale = (target_max - target_min) / range;
-        rgb.data
-            .iter_mut()
-            .for_each(|v| *v = (*v - current_min) * scale + target_min);
-    }
+    scan(density_cmy, profile, params, backend, color_ref, gamut)
 }
 
 fn select_illuminant(name: &str) -> &'static [f32] {
@@ -448,7 +437,7 @@ fn select_illuminant(name: &str) -> &'static [f32] {
     }
 }
 
-fn select_illuminant_f64(name: &str) -> &'static [f64] {
+pub fn select_illuminant_f64(name: &str) -> &'static [f64] {
     match name {
         "D50" => &spectral::ILLUMINANT_D50_F64,
         "D55" => &spectral::ILLUMINANT_D55_F64,

@@ -136,8 +136,16 @@ pub fn compute_tc_lut_with_window(
     // — left-to-right. The 81-wavelength reduction in numpy uses
     // pairwise summation; for 81 elements that's recursive halving.
     // We replicate it via `pairwise_sum_f64`.
-    let mut num_per_wl = [Vec::<f64>::with_capacity(n_wl), Vec::with_capacity(n_wl), Vec::with_capacity(n_wl)];
-    let mut den_per_wl = [Vec::<f64>::with_capacity(n_wl), Vec::with_capacity(n_wl), Vec::with_capacity(n_wl)];
+    let mut num_per_wl = [
+        Vec::<f64>::with_capacity(n_wl),
+        Vec::with_capacity(n_wl),
+        Vec::with_capacity(n_wl),
+    ];
+    let mut den_per_wl = [
+        Vec::<f64>::with_capacity(n_wl),
+        Vec::with_capacity(n_wl),
+        Vec::with_capacity(n_wl),
+    ];
     for wl in 0..n_wl {
         for c in 0..3 {
             let si = sensitivity[wl][c] * illuminant[wl];
@@ -167,7 +175,8 @@ pub fn compute_tc_lut_with_window(
     let n_pix = size * size;
     let mut spec_f64 = vec![0.0f64; n_pix * n_wl];
     for i in 0..n_pix {
-        let src = &spectra_lut.data[i * spectra_lut.n_wavelengths..i * spectra_lut.n_wavelengths + n_wl];
+        let src =
+            &spectra_lut.data[i * spectra_lut.n_wavelengths..i * spectra_lut.n_wavelengths + n_wl];
         let dst = &mut spec_f64[i * n_wl..(i + 1) * n_wl];
         for (d, s) in dst.iter_mut().zip(src.iter()) {
             *d = *s as f64;

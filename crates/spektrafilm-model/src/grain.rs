@@ -98,6 +98,7 @@ pub fn apply_grain_to_density(
     grain_uniformity: [f64; 3],
     grain_blur: f32,
     n_sub_layers: u32,
+    monochrome: bool,
     backend: &dyn ComputeBackend,
 ) -> ImageBuf {
     let w = density_cmy.width;
@@ -125,7 +126,11 @@ pub fn apply_grain_to_density(
         let mut grain_sum = vec![ZERO; density_ch.len()];
 
         for sl in 0..n_sub_layers {
-            let seed = (ch as u64) + (sl as u64) * 10;
+            // Monochrome (B&W): one shared noise field — every lane draws
+            // from channel 0's RNG stream (upstream n_channels==1 has a
+            // single emulsion, seed ch=0).
+            let seed_ch = if monochrome { 0 } else { ch as u64 };
+            let seed = seed_ch + (sl as u64) * 10;
             let g = layer_particle_model(
                 &density_ch,
                 w,

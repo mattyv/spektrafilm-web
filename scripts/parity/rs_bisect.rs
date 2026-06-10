@@ -128,7 +128,7 @@ fn main() {
     // ── 3. Printing (process_with_calibration) ─────────────────────
     let printed = stages::printing::process_with_calibration(
         &density_cmy_film, &film, &print, &params, &backend,
-        &print_illuminant, print_exposure_factor,
+        &print_illuminant, print_exposure_factor, [0.0; 3], 1.0,
     );
     dump_f64("03_density_cmy_print", &imagebuf_to_f64(&printed));
 

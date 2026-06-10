@@ -30,6 +30,25 @@ pub struct DiffusionFilterParams {
     pub bloom_size: f32,
 }
 
+impl DiffusionFilterParams {
+    /// Borrowed view as the model crate's `DiffusionFilter` (f64), for the
+    /// CPU diffusion-filter apply. `family` borrows `self.filter_family`.
+    pub fn to_model(&self) -> spektrafilm_model::diffusion::DiffusionFilter<'_> {
+        spektrafilm_model::diffusion::DiffusionFilter {
+            family: &self.filter_family,
+            strength: self.strength as f64,
+            spatial_scale: self.spatial_scale as f64,
+            halo_warmth: self.halo_warmth as f64,
+            core_intensity: self.core_intensity as f64,
+            core_size: self.core_size as f64,
+            halo_intensity: self.halo_intensity as f64,
+            halo_size: self.halo_size as f64,
+            bloom_intensity: self.bloom_intensity as f64,
+            bloom_size: self.bloom_size as f64,
+        }
+    }
+}
+
 impl Default for DiffusionFilterParams {
     fn default() -> Self {
         Self {
@@ -192,13 +211,28 @@ pub struct GrainParams {
     pub micro_structure: [f32; 2],
     #[serde(default = "default_1i")]
     pub n_sub_layers: u32,
+    /// One shared noise field across all channels instead of independent
+    /// per-channel RNG streams. Set by the pipeline for B&W films
+    /// (upstream n_channels==1 has a single emulsion); not user-facing.
+    #[serde(default)]
+    pub monochrome: bool,
 }
 
-fn default_02_f64() -> f64 { 0.2 }
-fn default_particle_scale_f64() -> [f64; 3] { [0.8, 1.0, 2.0] }
-fn default_particle_scale_layers_f64() -> [f64; 3] { [2.5, 1.0, 0.5] }
-fn default_density_min_f64() -> [f64; 3] { [0.07, 0.08, 0.12] }
-fn default_uniformity_f64() -> [f64; 3] { [0.97, 0.97, 0.99] }
+fn default_02_f64() -> f64 {
+    0.2
+}
+fn default_particle_scale_f64() -> [f64; 3] {
+    [1.6, 1.6, 3.2]
+}
+fn default_particle_scale_layers_f64() -> [f64; 3] {
+    [2.0, 1.0, 0.5]
+}
+fn default_density_min_f64() -> [f64; 3] {
+    [0.03, 0.03, 0.03]
+}
+fn default_uniformity_f64() -> [f64; 3] {
+    [0.97, 0.99, 0.97]
+}
 
 impl Default for GrainParams {
     fn default() -> Self {
@@ -206,14 +240,15 @@ impl Default for GrainParams {
             active: true,
             sublayers_active: true,
             agx_particle_area_um2: 0.2,
-            agx_particle_scale: [0.8, 1.0, 2.0],
-            agx_particle_scale_layers: [2.5, 1.0, 0.5],
-            density_min: [0.07, 0.08, 0.12],
-            uniformity: [0.97, 0.97, 0.99],
+            agx_particle_scale: [1.6, 1.6, 3.2],
+            agx_particle_scale_layers: [2.0, 1.0, 0.5],
+            density_min: [0.03, 0.03, 0.03],
+            uniformity: [0.97, 0.99, 0.97],
             blur: 0.65,
             blur_dye_clouds_um: 1.0,
             micro_structure: [0.2, 30.0],
             n_sub_layers: 1,
+            monochrome: false,
         }
     }
 }
@@ -257,13 +292,27 @@ pub struct HalationParams {
     pub halation_renormalize: bool,
 }
 
-fn default_one_f64() -> f64 { 1.0 }
-fn default_half_f64() -> f64 { 0.5 }
-fn default_scatter_core_f64() -> [f64; 3] { [2.2, 2.0, 1.6] }
-fn default_scatter_tail_f64() -> [f64; 3] { [9.3, 9.7, 9.1] }
-fn default_scatter_tail_weight_f64() -> [f64; 3] { [0.78, 0.65, 0.67] }
-fn default_halation_strength_f64() -> [f64; 3] { [0.05, 0.015, 0.0] }
-fn default_halation_sigma_f64() -> [f64; 3] { [65.0, 65.0, 65.0] }
+fn default_one_f64() -> f64 {
+    1.0
+}
+fn default_half_f64() -> f64 {
+    0.5
+}
+fn default_scatter_core_f64() -> [f64; 3] {
+    [2.2, 2.0, 1.6]
+}
+fn default_scatter_tail_f64() -> [f64; 3] {
+    [9.3, 9.7, 9.1]
+}
+fn default_scatter_tail_weight_f64() -> [f64; 3] {
+    [0.78, 0.65, 0.67]
+}
+fn default_halation_strength_f64() -> [f64; 3] {
+    [0.05, 0.015, 0.0]
+}
+fn default_halation_sigma_f64() -> [f64; 3] {
+    [65.0, 65.0, 65.0]
+}
 
 impl Default for HalationParams {
     fn default() -> Self {
@@ -319,13 +368,27 @@ pub struct DirCouplersParams {
     pub diffusion_tail_weight: f64,
 }
 
-fn default_gamma_same_f64() -> [f64; 3] { [0.341, 0.324, 0.273] }
-fn default_gamma_r_gb_f64() -> [f64; 2] { [0.355, 0.305] }
-fn default_gamma_g_rb_f64() -> [f64; 2] { [0.154, 0.358] }
-fn default_gamma_b_rg_f64() -> [f64; 2] { [0.171, 0.225] }
-fn default_20_f64() -> f64 { 20.0 }
-fn default_200_f64() -> f64 { 200.0 }
-fn default_006_f64() -> f64 { 0.06 }
+fn default_gamma_same_f64() -> [f64; 3] {
+    [0.341, 0.324, 0.273]
+}
+fn default_gamma_r_gb_f64() -> [f64; 2] {
+    [0.355, 0.305]
+}
+fn default_gamma_g_rb_f64() -> [f64; 2] {
+    [0.154, 0.358]
+}
+fn default_gamma_b_rg_f64() -> [f64; 2] {
+    [0.171, 0.225]
+}
+fn default_20_f64() -> f64 {
+    20.0
+}
+fn default_200_f64() -> f64 {
+    200.0
+}
+fn default_006_f64() -> f64 {
+    0.06
+}
 
 impl Default for DirCouplersParams {
     fn default() -> Self {
@@ -372,6 +435,12 @@ impl Default for GlareParams {
 pub struct FilmRenderingParams {
     #[serde(default = "default_one")]
     pub density_curve_gamma: f32,
+    /// Development time (minutes) for B&W development-time families —
+    /// forward-port of upstream dev's `chemistry.development_time`. Selects
+    /// the nearest entry of the profile's family; `None` picks the
+    /// floor-middle entry. Ignored by colour profiles.
+    #[serde(default)]
+    pub development_time: Option<f64>,
     #[serde(default)]
     pub grain: GrainParams,
     #[serde(default)]
@@ -386,6 +455,7 @@ impl Default for FilmRenderingParams {
     fn default() -> Self {
         Self {
             density_curve_gamma: 1.0,
+            development_time: None,
             grain: GrainParams::default(),
             halation: HalationParams::default(),
             dir_couplers: DirCouplersParams::default(),
@@ -398,15 +468,64 @@ impl Default for FilmRenderingParams {
 pub struct PrintRenderingParams {
     #[serde(default = "default_one")]
     pub density_curve_gamma: f32,
+    /// Development time (minutes) for B&W print stocks (e.g. kodak_2302) —
+    /// same semantics as `FilmRenderingParams::development_time`.
+    #[serde(default)]
+    pub development_time: Option<f64>,
     #[serde(default)]
     pub glare: GlareParams,
+    #[serde(default)]
+    pub density_curves_morph: PrintCurvesMorphParams,
 }
 
 impl Default for PrintRenderingParams {
     fn default() -> Self {
         Self {
             density_curve_gamma: 1.0,
+            development_time: None,
             glare: GlareParams::default(),
+            density_curves_morph: PrintCurvesMorphParams::default(),
+        }
+    }
+}
+
+/// User-facing controls for the s023 print density-curve morph (see
+/// `crate::print_morph`). Kept in f64 — the morph is a parity-sensitive f64
+/// computation. `active` defaults to `false`, matching upstream 0.3.4 — but
+/// note that (also matching upstream) the print develop always evaluates the
+/// profile's fitted `density_curves_model` when one is present; `active` only
+/// enables the coupled-gamma morphing of that model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrintCurvesMorphParams {
+    #[serde(default)]
+    pub active: bool,
+    #[serde(default = "default_one_f64")]
+    pub gamma_factor: f64,
+    #[serde(default = "default_one_f64")]
+    pub gamma_factor_fast: f64,
+    #[serde(default = "default_one_f64")]
+    pub gamma_factor_slow: f64,
+    #[serde(default = "default_one_f64")]
+    pub gamma_factor_red: f64,
+    #[serde(default = "default_one_f64")]
+    pub gamma_factor_green: f64,
+    #[serde(default = "default_one_f64")]
+    pub gamma_factor_blue: f64,
+    #[serde(default)]
+    pub developer_exhaustion: f64,
+}
+
+impl Default for PrintCurvesMorphParams {
+    fn default() -> Self {
+        Self {
+            active: false,
+            gamma_factor: 1.0,
+            gamma_factor_fast: 1.0,
+            gamma_factor_slow: 1.0,
+            gamma_factor_red: 1.0,
+            gamma_factor_green: 1.0,
+            gamma_factor_blue: 1.0,
+            developer_exhaustion: 0.0,
         }
     }
 }
@@ -431,6 +550,10 @@ pub struct IoParams {
     pub upscale_factor: f32,
     #[serde(default)]
     pub scan_film: bool,
+    #[serde(default)]
+    pub output_gamut_compress: OutputGamutCompressParams,
+    #[serde(default)]
+    pub input_gamut_compress: InputGamutCompressParams,
 }
 
 impl Default for IoParams {
@@ -445,8 +568,69 @@ impl Default for IoParams {
             crop_size: [0.1, 0.1],
             upscale_factor: 1.0,
             scan_film: false,
+            output_gamut_compress: OutputGamutCompressParams::default(),
+            input_gamut_compress: InputGamutCompressParams::default(),
         }
     }
+}
+
+/// Input gamut compression config — mirrors upstream `InputGamutCompressSpec`.
+/// Baked into the tc_lut at build time, so the per-pixel path stays
+/// compression-agnostic. `"xy"` (the default, matching upstream 0.3.4) applies
+/// the ACES-RGC-style radial compression toward the spectral locus;
+/// `algorithm = "off"` passes input chromaticities through unchanged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InputGamutCompressParams {
+    #[serde(default = "default_xy")]
+    pub algorithm: String,
+    #[serde(default = "default_gamut_knee")]
+    pub knee: [f32; 3],
+}
+
+impl Default for InputGamutCompressParams {
+    fn default() -> Self {
+        Self {
+            algorithm: "xy".into(),
+            knee: [0.0, 1.0, 6.0],
+        }
+    }
+}
+
+/// Output gamut compression config — mirrors upstream `OutputGamutCompressSpec`.
+/// `"cam16ucs"` (the default, matching upstream 0.3.4) applies the CAM16-UCS
+/// chroma knee + one-sided lightness roll-off; `"off"` passes RGB through
+/// unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutputGamutCompressParams {
+    #[serde(default = "default_cam16ucs")]
+    pub algorithm: String,
+    #[serde(default = "default_gamut_knee")]
+    pub knee: [f32; 3],
+    #[serde(default = "default_gamut_lightness")]
+    pub lightness_compression: Option<[f32; 3]>,
+}
+
+impl Default for OutputGamutCompressParams {
+    fn default() -> Self {
+        Self {
+            algorithm: "cam16ucs".into(),
+            knee: [0.0, 1.0, 6.0],
+            lightness_compression: Some([0.7, 1.0, 2.2]),
+        }
+    }
+}
+
+fn default_xy() -> String {
+    "xy".into()
+}
+fn default_cam16ucs() -> String {
+    "cam16ucs".into()
+}
+fn default_gamut_knee() -> [f32; 3] {
+    [0.0, 1.0, 6.0]
+}
+fn default_gamut_lightness() -> Option<[f32; 3]> {
+    Some([0.7, 1.0, 2.2])
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -473,6 +657,12 @@ pub struct SettingsParams {
     pub preview_mode: bool,
     #[serde(default = "default_true")]
     pub neutral_print_filters_from_database: bool,
+    /// Use CAT16 (instead of CAT02) for the input RGB→tc chromatic adaptation
+    /// that feeds the Hanatos spectral upsampling. Default true matches
+    /// upstream 0.3.4 (`_rgb_to_tc_b` hard-codes CAT16); false restores the
+    /// CAT02 0.3.2 behavior.
+    #[serde(default = "default_true")]
+    pub use_cat16: bool,
 }
 
 impl Default for SettingsParams {
@@ -489,6 +679,7 @@ impl Default for SettingsParams {
             preview_max_size: 640,
             preview_mode: false,
             neutral_print_filters_from_database: true,
+            use_cat16: true,
         }
     }
 }

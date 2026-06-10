@@ -24,8 +24,12 @@ use tiff::encoder::{TiffEncoder, colortype::RGB32Float};
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let input = args.next().ok_or_else(|| anyhow!("usage: decode_raw_gui <input.raw> <output.tif>"))?;
-    let output = args.next().ok_or_else(|| anyhow!("usage: decode_raw_gui <input.raw> <output.tif>"))?;
+    let input = args
+        .next()
+        .ok_or_else(|| anyhow!("usage: decode_raw_gui <input.raw> <output.tif>"))?;
+    let output = args
+        .next()
+        .ok_or_else(|| anyhow!("usage: decode_raw_gui <input.raw> <output.tif>"))?;
     let input = Path::new(&input);
     let output = Path::new(&output);
 

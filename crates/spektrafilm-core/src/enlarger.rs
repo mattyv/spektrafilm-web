@@ -9,26 +9,86 @@ use spektrafilm_math::spectral::{self, N_WAVELENGTHS};
 /// `standard_illuminant('TH-KG3')`. The f32 fallback drops ~7 digits
 /// per sample and accumulates ~3e-8 in the filtered illuminant.
 const ILLUMINANT_TH_KG3_F64: [f64; N_WAVELENGTHS] = [
-    0.27115487737678473, 0.2933630241983439, 0.31540886133985474, 0.3369808836611168,
-    0.3586779925678246, 0.38052016290102403, 0.40301341542370506, 0.4267870797493813,
-    0.4516515921147848, 0.4780646983713809, 0.5066708689059379, 0.5366576010691867,
-    0.5680769778513239, 0.5999220381342626, 0.630515347854697, 0.6612217385546929,
-    0.6920909115305464, 0.7236647580300142, 0.7576009324911563, 0.7930688015230838,
-    0.829084542867803, 0.8654853588024557, 0.902212749209677, 0.938990050475476,
-    0.9747004155955517, 1.0087417855358256, 1.040916738775546, 1.0715558331394295,
-    1.1009111192408307, 1.131926197237691, 1.1638985698017286, 1.19636460651255,
-    1.2303390279092097, 1.2682954247580434, 1.3068524359316893, 1.3428629981362672,
-    1.375710370915656, 1.4046281460277452, 1.4308952617117419, 1.4554028101360024,
-    1.4771790396751106, 1.4964115098687572, 1.5136660039295053, 1.5280688440333003,
-    1.538146469210825, 1.5459434102593674, 1.5515901051035574, 1.5540261727761033,
-    1.5535666436238242, 1.5500616564793381, 1.5408266875226315, 1.5320737503736817,
-    1.5194886088637505, 1.5030832634966458, 1.479985561016079, 1.4599852627082766,
-    1.4367535752409983, 1.4032296202488896, 1.3718429999284323, 1.3404558220815574,
-    1.3019482391882462, 1.2649087261004042, 1.2261391348332888, 1.1802123657454517,
-    1.136867763608742, 1.0926534663168934, 1.0452427815027683, 1.0004794004746733,
-    0.9480577282133905, 0.9023807920757143, 0.8546651971962678, 0.7922263441280082,
-    0.7345212240830614, 0.6892285469718005, 0.6522498893006442, 0.607482301998138,
-    0.5717547839358964, 0.526940374973515, 0.4866761911161827, 0.449539809526992,
+    0.27115487737678473,
+    0.2933630241983439,
+    0.31540886133985474,
+    0.3369808836611168,
+    0.3586779925678246,
+    0.38052016290102403,
+    0.40301341542370506,
+    0.4267870797493813,
+    0.4516515921147848,
+    0.4780646983713809,
+    0.5066708689059379,
+    0.5366576010691867,
+    0.5680769778513239,
+    0.5999220381342626,
+    0.630515347854697,
+    0.6612217385546929,
+    0.6920909115305464,
+    0.7236647580300142,
+    0.7576009324911563,
+    0.7930688015230838,
+    0.829084542867803,
+    0.8654853588024557,
+    0.902212749209677,
+    0.938990050475476,
+    0.9747004155955517,
+    1.0087417855358256,
+    1.040916738775546,
+    1.0715558331394295,
+    1.1009111192408307,
+    1.131926197237691,
+    1.1638985698017286,
+    1.19636460651255,
+    1.2303390279092097,
+    1.2682954247580434,
+    1.3068524359316893,
+    1.3428629981362672,
+    1.375710370915656,
+    1.4046281460277452,
+    1.4308952617117419,
+    1.4554028101360024,
+    1.4771790396751106,
+    1.4964115098687572,
+    1.5136660039295053,
+    1.5280688440333003,
+    1.538146469210825,
+    1.5459434102593674,
+    1.5515901051035574,
+    1.5540261727761033,
+    1.5535666436238242,
+    1.5500616564793381,
+    1.5408266875226315,
+    1.5320737503736817,
+    1.5194886088637505,
+    1.5030832634966458,
+    1.479985561016079,
+    1.4599852627082766,
+    1.4367535752409983,
+    1.4032296202488896,
+    1.3718429999284323,
+    1.3404558220815574,
+    1.3019482391882462,
+    1.2649087261004042,
+    1.2261391348332888,
+    1.1802123657454517,
+    1.136867763608742,
+    1.0926534663168934,
+    1.0452427815027683,
+    1.0004794004746733,
+    0.9480577282133905,
+    0.9023807920757143,
+    0.8546651971962678,
+    0.7922263441280082,
+    0.7345212240830614,
+    0.6892285469718005,
+    0.6522498893006442,
+    0.607482301998138,
+    0.5717547839358964,
+    0.526940374973515,
+    0.4866761911161827,
+    0.449539809526992,
     0.41455292589926274,
 ];
 
@@ -224,6 +284,50 @@ pub fn enlarger_filtered_illuminant_f64(
     filtered
 }
 
+/// Spatially-constant raw 3-vector added to every print pixel's exposure
+/// *before* the inner `log10` — the enlarger preflash (a uniform low
+/// pre-exposure that lifts shadow density and lowers print contrast).
+///
+/// Port of Python `PrintingStage._compute_raw_preflash`: the film base
+/// density is lit by the preflash-filtered illuminant (the enlarger filters
+/// at neutral plus the preflash Y/M shifts), integrated against the print
+/// sensitivity, and scaled by `preflash_exposure`. Returns `[0; 3]` when
+/// preflash is off, so the runtime path stays inert by default.
+pub fn compute_preflash_raw(
+    enlarger: &crate::params::EnlargerParams,
+    c_neutral: f64,
+    m_neutral: f64,
+    y_neutral: f64,
+    base_density: &[f64],
+    print_sensitivity: &[[f64; 3]],
+) -> [f64; 3] {
+    if enlarger.preflash_exposure <= 0.0 {
+        return [0.0; 3];
+    }
+    let preflash_illuminant = enlarger_filtered_illuminant_f64(
+        &enlarger.illuminant,
+        c_neutral,
+        m_neutral + enlarger.preflash_m_filter_shift as f64,
+        y_neutral + enlarger.preflash_y_filter_shift as f64,
+    );
+    let n_wl = preflash_illuminant
+        .len()
+        .min(base_density.len())
+        .min(print_sensitivity.len());
+    let mut raw = [0.0f64; 3];
+    for wl in 0..n_wl {
+        // density_to_light: 10^(-base) * illuminant, NaN → 0 (base_density
+        // carries NaN at wavelengths with no data — see deser_nullable_vec).
+        let t = 10.0f64.powf(-base_density[wl]) * preflash_illuminant[wl];
+        let light = if t.is_nan() { 0.0 } else { t };
+        for c in 0..3 {
+            raw[c] += light * print_sensitivity[wl][c];
+        }
+    }
+    let e = enlarger.preflash_exposure as f64;
+    [raw[0] * e, raw[1] * e, raw[2] * e]
+}
+
 /// f64 dichroic filter curves.
 fn dichroic_filters_f64() -> [[f64; 3]; N_WAVELENGTHS] {
     let edges = [516.0f64, 500.0, 610.0, 607.0];
@@ -243,46 +347,54 @@ fn dichroic_filters_f64() -> [[f64; 3]; N_WAVELENGTHS] {
     filters
 }
 
-/// Compute the midgray spectral density through the film.
-///
-/// Fully f64 calibration path matching Python's `_simple_rgb_to_density_spectral`:
-///   rgb → hanatos2025 raw → log10(raw + 1e-10) → develop_simple (RAW curves, no normalization)
-///   → compute_density_spectral (einsum + base_density)
-///
-/// Critically: the curves are NOT normalized by their per-channel minimum here —
-/// that normalization happens only in the full `develop` path, not the midgray
-/// calibration path. See `spektrafilm/runtime/stages/filming.py:_simple_rgb_to_density_spectral`.
-pub fn compute_midgray_spectral_density(
+/// Midgray sensor raw for the hanatos2025 upsampling path: `rgb_midgray·scale`
+/// pushed through the tc LUT. Always evaluated in sRGB (see
+/// `midgray_density_spectral_from_raw`); `scale` folds the EV compensation.
+pub fn midgray_raw_hanatos(
     tc_lut: &spektrafilm_math::spectral::TcLut,
-    film: &crate::profile::Profile,
-    params: &crate::params::RuntimeParams,
     ref_illuminant: &[f32],
-) -> Vec<f64> {
+    use_cat16: bool,
+    scale: f64,
+) -> [f64; 3] {
     use spektrafilm_math::image::ImageBuf;
-
-    let gray = spektrafilm_math::precision::from_f64(0.184);
+    let gray = spektrafilm_math::precision::from_f64(0.184 * scale);
     let img = ImageBuf::from_data(1, 1, vec![gray, gray, gray]);
-
-    // Python parity: `_simple_rgb_to_density_spectral` calls
-    // `_rgb_to_film_raw(rgb)` with no kwargs, which defaults to
-    // `color_space="sRGB"`. Midgray calibration is therefore always done
-    // in sRGB regardless of the runtime input color space — otherwise
-    // the print exposure normalization shifts as soon as the user feeds
-    // a different working space (ACES, ProPhoto, …). Hard-code "sRGB"
-    // here to match.
     let raw = spektrafilm_math::spectral::hanatos2025_rgb_to_raw(
         &img,
         tc_lut,
         "sRGB",
         ref_illuminant,
+        use_cat16,
     );
-    let raw_px = raw.get(0, 0);
+    let p = raw.get(0, 0);
+    [p[0] as f64, p[1] as f64, p[2] as f64]
+}
 
+/// Midgray spectral density through the film, from the midgray sensor raw.
+///
+/// Shared tail of Python's `_simple_rgb_to_density_spectral`:
+///   raw → log10(raw + 1e-10) → develop_simple (RAW curves, no normalization)
+///   → compute_density_spectral (einsum + base_density).
+///
+/// The raw is computed by the configured upsampler (`midgray_raw_hanatos` or
+/// the Mallett core matrix). Python's `_rgb_to_film_raw(rgb)` defaults to
+/// `color_space="sRGB"`, so midgray calibration is always done in sRGB
+/// regardless of the runtime input color space — otherwise the print exposure
+/// normalization would shift with the working space. Callers must honour that.
+///
+/// Critically: the curves are NOT normalized by their per-channel minimum here —
+/// that normalization happens only in the full `develop` path, not the midgray
+/// calibration path. See `spektrafilm/runtime/stages/filming.py:_simple_rgb_to_density_spectral`.
+pub fn midgray_density_spectral_from_raw(
+    raw: [f64; 3],
+    film: &crate::profile::Profile,
+    params: &crate::params::RuntimeParams,
+) -> Vec<f64> {
     // Python: log_raw = np.log10(raw + 1e-10)
     let log_raw: [f64; 3] = [
-        (raw_px[0] as f64 + 1e-10).log10(),
-        (raw_px[1] as f64 + 1e-10).log10(),
-        (raw_px[2] as f64 + 1e-10).log10(),
+        (raw[0] + 1e-10).log10(),
+        (raw[1] + 1e-10).log10(),
+        (raw[2] + 1e-10).log10(),
     ];
 
     // Python: density_cmy = interpolate_exposure_to_density(log_raw, density_curves, log_exposure, gamma_factor)
@@ -291,73 +403,13 @@ pub fn compute_midgray_spectral_density(
     // - x-axis per channel = log_exposure / gamma_factor[c]
     let log_exposure = film.log_exposure_f64();
     let density_curves = film.density_curves_f64();
-    let gamma = [
-        params.film_render.density_curve_gamma as f64,
-        params.film_render.density_curve_gamma as f64,
-        params.film_render.density_curve_gamma as f64,
-    ];
+    let g = params.film_render.density_curve_gamma as f64;
+    let gamma = [g, g, g];
 
     let density_cmy =
         interp_density_curve_at_log_raw(&log_raw, &log_exposure, &density_curves, &gamma);
 
     // Python: compute_density_spectral — einsum + base_density. NaN propagates per wavelength.
-    let n_wl = film.data.channel_density.len();
-    let mut spectral = vec![0.0f64; n_wl];
-    for wl in 0..n_wl {
-        let cd = &film.data.channel_density[wl];
-        let s = density_cmy[0] * cd[0] + density_cmy[1] * cd[1] + density_cmy[2] * cd[2];
-        let bd = if wl < film.data.base_density.len() {
-            film.data.base_density[wl]
-        } else {
-            0.0
-        };
-        spectral[wl] = s + bd;
-    }
-    spectral
-}
-
-/// Variant of `compute_midgray_spectral_density` for the compensated midgray —
-/// `rgb_midgray * 2^(-EV)`. Matches Python's
-/// `compute_midgray_density_spectral` `density_spectral_midgray_comp` branch
-/// (used by `_compute_exposure_factor_midgray` when EV ≠ 0).
-pub fn compute_midgray_spectral_density_comp(
-    tc_lut: &spektrafilm_math::spectral::TcLut,
-    film: &crate::profile::Profile,
-    params: &crate::params::RuntimeParams,
-    ref_illuminant: &[f32],
-    exposure_compensation_ev: f32,
-) -> Vec<f64> {
-    use spektrafilm_math::image::ImageBuf;
-
-    // Python: `rgb_midgray_comp = rgb_midgray * 2 ** (-EV)`.
-    // Python uses `2 ** neg_exp_comp_ev` where `neg_exp_comp_ev =
-    // self._camera.exposure_compensation_ev` (sign is positive in the
-    // Python code despite the variable name).
-    let scale = 2.0f64.powf(exposure_compensation_ev as f64);
-    let gray = spektrafilm_math::precision::from_f64(0.184 * scale);
-    let img = ImageBuf::from_data(1, 1, vec![gray, gray, gray]);
-    // Same hardcoded-sRGB rationale as compute_midgray_spectral_density.
-    let raw = spektrafilm_math::spectral::hanatos2025_rgb_to_raw(
-        &img,
-        tc_lut,
-        "sRGB",
-        ref_illuminant,
-    );
-    let raw_px = raw.get(0, 0);
-    let log_raw: [f64; 3] = [
-        (raw_px[0] as f64 + 1e-10).log10(),
-        (raw_px[1] as f64 + 1e-10).log10(),
-        (raw_px[2] as f64 + 1e-10).log10(),
-    ];
-    let log_exposure = film.log_exposure_f64();
-    let density_curves = film.density_curves_f64();
-    let gamma = [
-        params.film_render.density_curve_gamma as f64,
-        params.film_render.density_curve_gamma as f64,
-        params.film_render.density_curve_gamma as f64,
-    ];
-    let density_cmy =
-        interp_density_curve_at_log_raw(&log_raw, &log_exposure, &density_curves, &gamma);
     let n_wl = film.data.channel_density.len();
     let mut spectral = vec![0.0f64; n_wl];
     for wl in 0..n_wl {
@@ -466,3 +518,67 @@ fn erf(x: f64) -> f64 {
     libm::erf(x)
 }
 
+#[cfg(test)]
+mod parity_tests {
+    use crate::pipeline::Pipeline;
+    use std::path::{Path, PathBuf};
+
+    fn data_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("data")
+    }
+
+    /// Enlarger preflash regression guard. The constant preflash raw vector is
+    /// the film base density lit by the preflash-filtered illuminant, integrated
+    /// against the print sensitivity and scaled by `preflash_exposure` — Python
+    /// `PrintingStage._compute_raw_preflash`. Reference values were computed from
+    /// a faithful numpy transcription (`density_to_light` + `einsum`) on the real
+    /// kodak_portra_400 base density and kodak_portra_endura sensitivity, with the
+    /// baked TH-KG3 (C0 M65 Y55) default-filter illuminant and exposure 0.0625
+    /// (an f32-exact value, so the f32→f64 widening of `preflash_exposure` is
+    /// not part of the comparison).
+    #[test]
+    fn preflash_raw_matches_python_reference() {
+        let dir = data_dir();
+        let film = crate::profile::load_profile_by_name(&dir, "kodak_portra_400").unwrap();
+        let print = crate::profile::load_profile_by_name(&dir, "kodak_portra_endura").unwrap();
+
+        let mut params = crate::params::RuntimeParams::default();
+        // Keep the neutral filters at the param defaults (C=0, M=65, Y=55) so the
+        // preflash illuminant is the baked TH-KG3 default-filter spectrum the
+        // reference used (no per-stock database override).
+        params.settings.neutral_print_filters_from_database = false;
+        params.enlarger.preflash_exposure = 0.0625;
+
+        let pipeline = Pipeline::new_with_spectral(film, print, params, &dir).unwrap();
+        let p = pipeline.preflash_raw();
+
+        let expect = [0.4567086334477163, 0.3959958805787103, 0.5172324967476551];
+        for c in 0..3 {
+            assert!(
+                (p[c] - expect[c]).abs() < 1e-12,
+                "channel {c}: {} vs {}",
+                p[c],
+                expect[c]
+            );
+        }
+    }
+
+    /// Preflash is inert by default — `preflash_exposure == 0` yields no exposure.
+    #[test]
+    fn preflash_off_is_zero() {
+        let dir = data_dir();
+        let film = crate::profile::load_profile_by_name(&dir, "kodak_portra_400").unwrap();
+        let print = crate::profile::load_profile_by_name(&dir, "kodak_portra_endura").unwrap();
+
+        let params = crate::params::RuntimeParams::default();
+        assert_eq!(params.enlarger.preflash_exposure, 0.0);
+
+        let pipeline = Pipeline::new_with_spectral(film, print, params, &dir).unwrap();
+        assert_eq!(pipeline.preflash_raw(), [0.0; 3]);
+    }
+}

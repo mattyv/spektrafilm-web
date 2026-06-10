@@ -13,25 +13,22 @@ use blas_src as _;
 
 use spektrafilm_math::vforce::exp10_inplace;
 
-/// Row-chunked dgemm `C[M×N] = A[M×K] · op(B[k_b × n_b])` where each
-/// rayon thread runs an independent dgemm on a contiguous slice of M.
+/// Single-call dgemm `C[M×N] = A[M×K] · op(B)` in row-major layout.
 ///
-/// Why: Accelerate's BLAS does not parallelise dgemm for small K (we
-/// hit K=3 and K=81), so a single dgemm on 20M rows runs the whole
-/// reduction on the main thread and saturates only one core. By
-/// splitting M and dispatching across rayon, the total wall time of
-/// the matmul drops by ~num_threads × on big images.
-///
-/// Bit-parity: row-wise chunking does NOT change the accumulation
-/// order within any single output row (each row's K-element dot
-/// product is still computed inside one dgemm call), so the result
-/// is byte-identical to the unchunked version.
+/// We deliberately issue ONE `cblas_dgemm` over the full M rather than
+/// splitting M across rayon and dispatching one dgemm per chunk: macOS
+/// Accelerate's BLAS is not safe to enter concurrently from multiple
+/// threads — concurrent calls corrupt memory and segfault
+/// intermittently (reproduced on the scan_film path; latent for every
+/// concurrent caller). A single call lets Accelerate parallelise
+/// internally and keeps numpy bit-parity, since each output row's
+/// K-element dot product was always computed inside one dgemm anyway.
 ///
 /// `trans_b` controls whether B is transposed on the fly; `b` is
 /// passed verbatim to BLAS in row-major layout with leading dimension
 /// `ldb`.
 #[allow(clippy::too_many_arguments)]
-fn dgemm_row_parallel(
+fn dgemm_blas(
     a: &[f64],
     b: &[f64],
     c: &mut [f64],
@@ -41,36 +38,26 @@ fn dgemm_row_parallel(
     trans_b: cblas::Transpose,
     ldb: i32,
 ) {
-    // Target ~4 chunks per worker so rayon can steal if a chunk
-    // finishes early. Floor at a chunk size where dgemm overhead is
-    // amortised; tiny chunks (<256 rows) waste setup on dgemm dispatch.
-    let workers = rayon::current_num_threads().max(1);
-    let target_chunks = workers * 4;
-    let chunk_rows = ((m + target_chunks - 1) / target_chunks).max(256);
-
-    a.par_chunks(chunk_rows * k)
-        .zip(c.par_chunks_mut(chunk_rows * n))
-        .for_each(|(a_chunk, c_chunk)| {
-            let m_chunk = a_chunk.len() / k;
-            unsafe {
-                cblas::dgemm(
-                    cblas::Layout::RowMajor,
-                    cblas::Transpose::None,
-                    trans_b,
-                    m_chunk as i32,
-                    n as i32,
-                    k as i32,
-                    1.0,
-                    a_chunk,
-                    k as i32,
-                    b,
-                    ldb,
-                    0.0,
-                    c_chunk,
-                    n as i32,
-                );
-            }
-        });
+    assert_eq!(a.len(), m * k, "dgemm_blas: a.len() != m*k");
+    assert_eq!(c.len(), m * n, "dgemm_blas: c.len() != m*n");
+    unsafe {
+        cblas::dgemm(
+            cblas::Layout::RowMajor,
+            cblas::Transpose::None,
+            trans_b,
+            m as i32,
+            n as i32,
+            k as i32,
+            1.0,
+            a,
+            k as i32,
+            b,
+            ldb,
+            0.0,
+            c,
+            n as i32,
+        );
+    }
 }
 
 pub struct CpuBackend;
@@ -167,6 +154,86 @@ impl ComputeBackend for CpuBackend {
     }
 }
 
+/// Tiled spectral integration shared by the print and scan CPU paths.
+///
+/// For each pixel: `proj · (10^(-(density·channel_densityᵀ + base)) · illuminant)`,
+/// i.e. GEMM(density, channel_densityᵀ) → `10^(-…)·illuminant` (NaN→0) →
+/// GEMM(·, proj). Returns the projected `n_pix × 3` buffer (XYZ via the CMFs,
+/// or raw via the print sensitivity).
+///
+/// Tiles over pixels so the `tile × n_wl` spectral intermediate stays bounded —
+/// the full `n_pix × n_wl` buffer is ~15 GB at 24 MP and thrashes swap. BLAS is
+/// internally threaded so tiles run sequentially with no throughput loss, and
+/// the vForce passes still parallelise within each tile. Bit-identical to the
+/// untiled version (each output pixel is computed independently).
+#[allow(clippy::too_many_arguments)]
+fn spectral_to_proj_tiled(
+    density_f64: &[f64],
+    cd_flat: &[f64],
+    base_density: &[f64],
+    has_base: bool,
+    illuminant: &[f64],
+    proj_flat: &[f64],
+    n_pix: usize,
+    n_wl: usize,
+) -> Vec<f64> {
+    // ~256K px/tile → 256K × 81 × 8 B ≈ 170 MB spectral scratch, reused.
+    const TILE: usize = 1 << 18;
+    const ROWS_PER_TASK: usize = 4096;
+    let mut out = vec![0.0f64; n_pix * 3];
+    let mut spectral = vec![0.0f64; TILE.min(n_pix.max(1)) * n_wl];
+    let mut start = 0;
+    while start < n_pix {
+        let tpx = (n_pix - start).min(TILE);
+        let spec = &mut spectral[..tpx * n_wl];
+        // GEMM 1: spec [tpx × n_wl] = density [tpx × 3] · channel_densityᵀ [3 × n_wl]
+        dgemm_blas(
+            &density_f64[start * 3..(start + tpx) * 3],
+            cd_flat,
+            spec,
+            tpx,
+            n_wl,
+            3,
+            cblas::Transpose::Ordinary,
+            3,
+        );
+        // Three-pass vForce: -(d + base) → 10^x → ×illuminant (NaN→0).
+        spec.par_chunks_mut(ROWS_PER_TASK * n_wl).for_each(|chunk| {
+            if has_base {
+                for row in chunk.chunks_exact_mut(n_wl) {
+                    for wl in 0..n_wl {
+                        row[wl] = -(row[wl] + base_density[wl]);
+                    }
+                }
+            } else {
+                for v in chunk.iter_mut() {
+                    *v = -*v;
+                }
+            }
+            exp10_inplace(chunk);
+            for row in chunk.chunks_exact_mut(n_wl) {
+                for wl in 0..n_wl {
+                    let t = row[wl] * illuminant[wl];
+                    row[wl] = if t.is_nan() { 0.0 } else { t };
+                }
+            }
+        });
+        // GEMM 2: out [tpx × 3] = spec [tpx × n_wl] · proj [n_wl × 3]
+        dgemm_blas(
+            spec,
+            proj_flat,
+            &mut out[start * 3..(start + tpx) * 3],
+            tpx,
+            3,
+            n_wl,
+            cblas::Transpose::None,
+            3,
+        );
+        start += tpx;
+    }
+    out
+}
+
 /// Same spectral-integration core as `scan_spectral_cpu`, but stops at
 /// `log_xyz = log10(max(xyz / normalization, 0) + 1e-10)` — i.e. it
 /// mirrors Python's `cmy_to_log_xyz` *exactly*. Used to build the
@@ -194,58 +261,21 @@ pub fn scan_log_xyz_cpu(
         .iter()
         .flat_map(|r| [r[0], r[1], r[2]])
         .collect();
-    let mut density_spectral = vec![0.0f64; n_pix * n_wl];
-    dgemm_row_parallel(
-        &density_f64,
-        &cd_flat,
-        &mut density_spectral,
-        n_pix,
-        n_wl,
-        3,
-        cblas::Transpose::Ordinary,
-        3,
-    );
-    const ROWS_PER_TASK: usize = 4096;
-    density_spectral
-        .par_chunks_mut(ROWS_PER_TASK * n_wl)
-        .for_each(|chunk| {
-            if has_base {
-                for row in chunk.chunks_exact_mut(n_wl) {
-                    for wl in 0..n_wl {
-                        row[wl] = -(row[wl] + base_density[wl]);
-                    }
-                }
-            } else {
-                for v in chunk.iter_mut() {
-                    *v = -*v;
-                }
-            }
-            exp10_inplace(chunk);
-            for row in chunk.chunks_exact_mut(n_wl) {
-                for wl in 0..n_wl {
-                    let t = row[wl] * illuminant[wl];
-                    row[wl] = if t.is_nan() { 0.0 } else { t };
-                }
-            }
-        });
-    let light = density_spectral;
-
     let mut cmf_flat = Vec::with_capacity(n_wl * 3);
     for wl in 0..n_wl {
         cmf_flat.push(spectral::CMF_X_F64[wl]);
         cmf_flat.push(spectral::CMF_Y_F64[wl]);
         cmf_flat.push(spectral::CMF_Z_F64[wl]);
     }
-    let mut xyz_flat = vec![0.0f64; n_pix * 3];
-    dgemm_row_parallel(
-        &light,
+    let mut xyz_flat = spectral_to_proj_tiled(
+        &density_f64,
+        &cd_flat,
+        base_density,
+        has_base,
+        illuminant,
         &cmf_flat,
-        &mut xyz_flat,
         n_pix,
-        3,
         n_wl,
-        cblas::Transpose::None,
-        3,
     );
 
     // Final step — exactly Python's `np.log10(np.fmax(xyz, 0.0) + 1e-10)`
@@ -292,73 +322,31 @@ pub fn scan_spectral_cpu(
     // f32, even with Scalar=f64 (`to_f32(v) as f64` quietly narrows).
     // The `as f64` conversion is per-element and embarrassingly parallel;
     // the prior serial collect ran ~60M conversions on one core.
+    // ── xyz = (10^(-(density·channel_densityᵀ + base)) · illuminant) @ CMF.
+    // Use f64 CMF constants — the f32 ones drop ~7 digits per sample and
+    // accumulate ~5e-6 of drift after the 81-wavelength reduction. The
+    // spectral integration is tiled (see `spectral_to_proj_tiled`) so the
+    // intermediate stays bounded at high resolution.
     let density_f64: Vec<f64> = density_cmy.data.par_iter().map(|&v| v as f64).collect();
     let cd_flat: Vec<f64> = channel_density[..n_wl]
         .iter()
         .flat_map(|r| [r[0], r[1], r[2]])
         .collect();
-    let mut density_spectral = vec![0.0f64; n_pix * n_wl];
-    dgemm_row_parallel(
-        &density_f64,
-        &cd_flat,
-        &mut density_spectral,
-        n_pix,
-        n_wl,
-        3,
-        cblas::Transpose::Ordinary,
-        3,
-    );
-    // Three-pass vForce path: (1) write `-(d + base)` in place,
-    // (2) `vvexp10` the whole block via Accelerate's SIMD pow10,
-    // (3) multiply by illuminant per column with NaN→0. Each pass is
-    // O(block) and friendly to the cache; rayon parallelises across
-    // blocks. This replaces the scalar `f64::powf` per element which
-    // dominated wall time even with rayon (we were CPU-bound on libm
-    // pow rather than memory-bound).
-    const ROWS_PER_TASK: usize = 4096;
-    density_spectral
-        .par_chunks_mut(ROWS_PER_TASK * n_wl)
-        .for_each(|chunk| {
-            if has_base {
-                for row in chunk.chunks_exact_mut(n_wl) {
-                    for wl in 0..n_wl {
-                        row[wl] = -(row[wl] + base_density[wl]);
-                    }
-                }
-            } else {
-                for v in chunk.iter_mut() {
-                    *v = -*v;
-                }
-            }
-            exp10_inplace(chunk);
-            for row in chunk.chunks_exact_mut(n_wl) {
-                for wl in 0..n_wl {
-                    let t = row[wl] * illuminant[wl];
-                    row[wl] = if t.is_nan() { 0.0 } else { t };
-                }
-            }
-        });
-    let light = density_spectral;
-
-    // ── xyz = light @ CMF  (CMF = [n_wl × 3] with X, Y, Z columns)
-    // Use f64 CMF constants — the f32 ones drop ~7 digits per sample
-    // and accumulate ~5e-6 of drift after the 81-wavelength reduction.
     let mut cmf_flat = Vec::with_capacity(n_wl * 3);
     for wl in 0..n_wl {
         cmf_flat.push(spectral::CMF_X_F64[wl]);
         cmf_flat.push(spectral::CMF_Y_F64[wl]);
         cmf_flat.push(spectral::CMF_Z_F64[wl]);
     }
-    let mut xyz_flat = vec![0.0f64; n_pix * 3];
-    dgemm_row_parallel(
-        &light,
+    let mut xyz_flat = spectral_to_proj_tiled(
+        &density_f64,
+        &cd_flat,
+        base_density,
+        has_base,
+        illuminant,
         &cmf_flat,
-        &mut xyz_flat,
         n_pix,
-        3,
         n_wl,
-        cblas::Transpose::None,
-        3,
     );
 
     // Python's `_density_to_rgb` does:
@@ -392,7 +380,7 @@ pub fn scan_spectral_cpu(
     // ── rgb = xyz_adapted @ xyz_to_rgb.T
     let xyz_to_rgb_flat: Vec<f64> = xyz_to_rgb.iter().flat_map(|r| [r[0], r[1], r[2]]).collect();
     let mut rgb_flat = vec![0.0f64; n_pix * 3];
-    dgemm_row_parallel(
+    dgemm_blas(
         &xyz_flat,
         &xyz_to_rgb_flat,
         &mut rgb_flat,
@@ -429,6 +417,7 @@ pub fn print_spectral_cpu(
     illuminant: &[f64],
     sensitivity: &[[f64; 3]],
     normalization_factor: f64,
+    preflash: [f64; 3],
 ) -> ImageBuf {
     let n_wl = channel_density
         .len()
@@ -450,73 +439,39 @@ pub fn print_spectral_cpu(
         .flat_map(|r| [r[0], r[1], r[2]])
         .collect();
 
-    // GEMM 1: density_spectral [n_pix × n_wl] = density_cmy [n_pix × 3] · channel_density^T [3 × n_wl]
-    // Row-chunked across rayon — Accelerate dgemm doesn't parallelise
-    // for K=3, so we split the M dimension ourselves.
-    let mut density_spectral = vec![0.0f64; n_pix * n_wl];
-    dgemm_row_parallel(
-        &density_f64,
-        &cd_flat,
-        &mut density_spectral,
-        n_pix,
-        n_wl,
-        3,
-        cblas::Transpose::Ordinary,
-        3,
-    );
-
-    // Three-pass vForce path — see matching block in `scan_spectral_cpu`.
-    const ROWS_PER_TASK: usize = 4096;
-    density_spectral
-        .par_chunks_mut(ROWS_PER_TASK * n_wl)
-        .for_each(|chunk| {
-            if has_base {
-                for row in chunk.chunks_exact_mut(n_wl) {
-                    for wl in 0..n_wl {
-                        row[wl] = -(row[wl] + base_density[wl]);
-                    }
-                }
-            } else {
-                for v in chunk.iter_mut() {
-                    *v = -*v;
-                }
-            }
-            exp10_inplace(chunk);
-            for row in chunk.chunks_exact_mut(n_wl) {
-                for wl in 0..n_wl {
-                    let t = row[wl] * illuminant[wl];
-                    row[wl] = if t.is_nan() { 0.0 } else { t };
-                }
-            }
-        });
-    let light = density_spectral; // alias
-
-    // GEMM 2: raw [n_pix × 3] = light [n_pix × n_wl] · sensitivity [n_wl × 3]
+    // raw [n_pix × 3] = (10^(-(density·channel_densityᵀ + base)) · illuminant) @ sensitivity.
+    // Tiled over pixels so the [tile × n_wl] spectral intermediate stays bounded
+    // at high resolution (see `spectral_to_proj_tiled`).
     let sens_flat: Vec<f64> = sensitivity[..n_wl]
         .iter()
         .flat_map(|r| [r[0], r[1], r[2]])
         .collect();
-    let mut raw_flat = vec![0.0f64; n_pix * 3];
-    dgemm_row_parallel(
-        &light,
+    let raw_flat = spectral_to_proj_tiled(
+        &density_f64,
+        &cd_flat,
+        base_density,
+        has_base,
+        illuminant,
         &sens_flat,
-        &mut raw_flat,
         n_pix,
-        3,
         n_wl,
-        cblas::Transpose::None,
-        3,
     );
 
-    // Apply normalization + log10(max(., 0) + 1e-10), in parallel.
+    // Apply normalization, add the constant preflash exposure, then
+    // log10(max(., 0) + 1e-10), in parallel. Preflash is a per-channel
+    // constant broadcast over every pixel (Python `raw += preflash`); adding
+    // it here — before the inner log10 — bakes it into LUT nodes when this
+    // path generates a print LUT, matching upstream `_film_cmy_to_print_log_raw`.
     let mut output = ImageBuf::new(density_cmy.width, density_cmy.height);
     output
         .data
-        .par_iter_mut()
-        .zip(raw_flat.par_iter())
-        .for_each(|(dst, &src)| {
-            let v = src * normalization_factor;
-            *dst = from_f64((v.max(0.0) + 1e-10).log10());
+        .par_chunks_exact_mut(3)
+        .zip(raw_flat.par_chunks_exact(3))
+        .for_each(|(dst, src)| {
+            for c in 0..3 {
+                let v = src[c] * normalization_factor + preflash[c];
+                dst[c] = from_f64((v.max(0.0) + 1e-10).log10());
+            }
         });
     output
 }

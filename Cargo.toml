@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "GPL-3.0"
 rust-version = "1.85"
@@ -38,6 +38,7 @@ thiserror = "2"
 anyhow = "1"
 byteorder = "1"
 libm = "0.2"
+rustfft = "6"
 
 [profile.release]
 lto = "thin"

@@ -15,7 +15,10 @@ struct Params {
     n_pixels: u32,
     base_seed: u32,
     n_sub_layers: u32,
-    _pad: u32,
+    // 1 = B&W monochrome grain: all lanes share the channel-0 RNG stream,
+    // producing one noise field (upstream n_channels==1 has a single
+    // emulsion). 0 = independent per-channel streams (colour).
+    monochrome: u32,
     density_min: vec4<f32>,            // .xyz used
     density_max: vec4<f32>,            // .xyz used (already includes density_min)
     n_particles_per_pixel: vec4<f32>,  // .xyz used (already divided by n_sub_layers)
@@ -88,8 +91,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var sl: i32 = 0; sl < n_sl; sl++) {
             // Matches the CPU stream split: seed = ch + sl*10, then mix
             // with pixel index. Use SplitMix to decorrelate small ints
-            // before xor-combining.
-            let layer_seed = u32(ch_i) + u32(sl) * 10u + params.base_seed;
+            // before xor-combining. Monochrome (B&W) shares channel 0's
+            // stream across all lanes.
+            var seed_ch = u32(ch_i);
+            if params.monochrome != 0u {
+                seed_ch = 0u;
+            }
+            let layer_seed = seed_ch + u32(sl) * 10u + params.base_seed;
             var rng = splitmix32(layer_seed) ^ splitmix32(idx);
 
             // Poisson(λ) via normal approximation: N(λ, √λ).

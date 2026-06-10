@@ -1,4 +1,5 @@
 pub mod colorspace;
+pub mod fft_conv;
 pub mod gaussian;
 pub mod image;
 pub mod interp;

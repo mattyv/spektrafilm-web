@@ -13,6 +13,13 @@ struct Params {
     n_wavelengths: u32,
     normalization: f32,
     xyz_to_rgb: mat3x3<f32>,
+    // B&W/slide scanner luminance remap: x=m, y=q, z=enable (0/1).
+    // Mirrors ColorReference::xyz_scale — clip(m*Y+q, 0, 1)/(Y+1e-10) on the
+    // pre-matrix scan XYZ. Identity (skipped) when z==0.
+    // w=skip_clamp (0/1): when 1 the output is NOT clamped to [0,1] —
+    // required when output gamut compression follows (it needs the
+    // out-of-gamut values; the CPU scan path never clamps here either).
+    bw: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -59,10 +66,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     xyz /= params.normalization;
 
+    // B&W/slide luminance remap on the pre-matrix XYZ (the combined
+    // CAT × xyz_to_rgb matrix is linear, so scaling here == scaling the
+    // pre-CAT XYZ as the CPU LUT path does).
+    if params.bw.z != 0.0 {
+        let y = xyz.y;
+        let scale = clamp(params.bw.x * y + params.bw.y, 0.0, 1.0) / (y + 1e-10);
+        xyz = xyz * scale;
+    }
+
     // XYZ → RGB via matrix multiply
     let rgb = params.xyz_to_rgb * xyz;
 
-    output_rgb[base] = clamp(rgb.x, 0.0, 1.0);
-    output_rgb[base + 1u] = clamp(rgb.y, 0.0, 1.0);
-    output_rgb[base + 2u] = clamp(rgb.z, 0.0, 1.0);
+    if params.bw.w != 0.0 {
+        output_rgb[base] = rgb.x;
+        output_rgb[base + 1u] = rgb.y;
+        output_rgb[base + 2u] = rgb.z;
+    } else {
+        output_rgb[base] = clamp(rgb.x, 0.0, 1.0);
+        output_rgb[base + 1u] = clamp(rgb.y, 0.0, 1.0);
+        output_rgb[base + 2u] = clamp(rgb.z, 0.0, 1.0);
+    }
 }

@@ -58,7 +58,7 @@ mod tests {
         );
         eprintln!("Python:   [1.025851130, 0.017941305, -0.033218342]");
 
-        let (tc, b) = spectral::rgb_to_tc_b(gray, "sRGB", ref_illuminant);
+        let (tc, b) = spectral::rgb_to_tc_b(gray, "sRGB", ref_illuminant, false);
         eprintln!("Rust tc: [{:.12}, {:.12}]", tc.0, tc.1);
         eprintln!("Rust b: {:.12}", b);
         eprintln!("Python tc: [0.445625560000, 0.520476270000]");
@@ -150,12 +150,14 @@ mod tests {
         // Python parity: use UNNORMALIZED tc_lut + sRGB input space (matches Python script).
         let mut srgb_params = crate::params::RuntimeParams::default();
         srgb_params.io.input_color_space = "sRGB".to_string();
-        let midgray_sd = crate::enlarger::compute_midgray_spectral_density(
+        let midgray_raw = crate::enlarger::midgray_raw_hanatos(
             &tc_lut_unnorm,
-            &film,
-            &srgb_params,
             ref_illuminant,
+            srgb_params.settings.use_cat16,
+            1.0,
         );
+        let midgray_sd =
+            crate::enlarger::midgray_density_spectral_from_raw(midgray_raw, &film, &srgb_params);
         eprintln!("midgray spectral[4]: {:.16}", midgray_sd[4]);
         eprintln!("Python spectral[4]:  1.2787165963066882");
 
@@ -169,6 +171,7 @@ mod tests {
                 &tc_lut_unnorm,
                 "sRGB",
                 ref_illuminant,
+                false,
             );
             let rpx = raw_im.get(0, 0);
             let log_raw_dbg: [f64; 3] = [
@@ -230,7 +233,7 @@ mod tests {
         let spectra_lut = spectral_service::load_spectra_lut(&dir).unwrap();
         let tc_lut = spectral_service::compute_tc_lut(&spectra_lut, &sensitivity);
         let _params = RuntimeParams::default();
-        let rgb_to_adapted = build_rgb_to_adapted_xyz("sRGB", &ILLUMINANT_D55);
+        let rgb_to_adapted = build_rgb_to_adapted_xyz("sRGB", &ILLUMINANT_D55, false);
 
         // Single-pixel midgray for direct comparison
         let gray = from_f64(0.184);
@@ -250,7 +253,7 @@ mod tests {
 
         if let Some(gpu) = spektrafilm_gpu::wgpu_backend::WgpuBackend::new() {
             use spektrafilm_gpu::ComputeBackend;
-            let gpu_out = gpu.hanatos2025_rgb_to_raw(&img, &tc_lut, "sRGB", &ILLUMINANT_D55);
+            let gpu_out = gpu.hanatos2025_rgb_to_raw(&img, &tc_lut, "sRGB", &ILLUMINANT_D55, false);
             eprintln!(
                 "GPU raw: [{:.16}, {:.16}, {:.16}]",
                 gpu_out.get(0, 0)[0] as f64,
@@ -295,8 +298,14 @@ mod tests {
         sign * (1.0 - poly * (-x * x).exp())
     }
 
-    /// Full end-to-end pipeline parity test: a single 1x1 linear 0.184 pixel.
-    /// Compares against Python's `simulate()` output with cctf_encoding=False, all options off.
+    /// Stage-by-stage parity against upstream 0.3.4 on a 1x1 linear 0.184
+    /// pixel at default settings (CAT16, input gamut `xy` baked into the
+    /// LUT, model-evaluated print curves), stochastic/spatial effects off.
+    /// Reference values are the upstream pipeline taps (`log_e_film`,
+    /// `cmy_film`, `log_e_print`, `cmy_print`) dumped from `origin/main`.
+    /// When full-chain parity breaks, this pinpoints the diverging stage.
+    /// Note the final scan here bypasses output gamut compression (identity),
+    /// so there is no `rgb_out` assertion — the full-chain test covers it.
     #[test]
     fn full_pipeline_parity_1x1_linear_184() {
         use crate::params::RuntimeParams;
@@ -316,97 +325,59 @@ mod tests {
         params.io.input_color_space = "sRGB".to_string();
         params.io.input_cctf_decoding = false;
         params.io.output_cctf_encoding = false; // keep linear for parity
-        // Python looks up these per-stock values from a database; we hardcode for this combo.
-        params.enlarger.m_filter_neutral = 52.29931794988834;
-        params.enlarger.y_filter_neutral = 55.84407313761937;
+
+        // Stage outputs accumulate f32 Scalar rounding; the f64 build
+        // tracks the Python taps tightly.
+        #[cfg(feature = "precision-f64")]
+        const TOL: f64 = 1e-6;
+        #[cfg(not(feature = "precision-f64"))]
+        const TOL: f64 = 3e-3;
+
+        let check = |stage: &str, got: [spektrafilm_math::precision::Scalar; 3], want: [f64; 3]| {
+            for c in 0..3 {
+                let g = got[c] as f64;
+                assert!(
+                    (g - want[c]).abs() < TOL,
+                    "{stage} ch {c}: {g} vs {} (diff {:.3e})",
+                    want[c],
+                    (g - want[c]).abs()
+                );
+            }
+        };
 
         let backend = spektrafilm_gpu::cpu_backend::CpuBackend;
-        let img = ImageBuf::from_data(
-            1,
-            1,
-            vec![from_f64(0.184), from_f64(0.184), from_f64(0.184)],
-        );
-
-        // Trace intermediate raw value from the filming stage
-        {
-            use spektrafilm_math::spectral::{TcLut, hanatos2025_rgb_to_raw};
-            // Build TC LUT exactly the way Pipeline::new_with_spectral does
-            let spectra_lut = crate::spectral_service::load_spectra_lut(&dir).unwrap();
-            let log_sens = film.log_sensitivity_f64();
-            let sensitivity: Vec<[f64; 3]> = log_sens
-                .iter()
-                .map(|row| {
-                    let mut o = [0.0; 3];
-                    for c in 0..3 {
-                        let v = 10f64.powf(row[c]);
-                        o[c] = if v.is_nan() { 0.0 } else { v };
-                    }
-                    o
-                })
-                .collect();
-            let window_params = film.data.hanatos2025_adaptation_window_params.clone();
-            let ref_illu = match film.info.reference_illuminant.as_str() {
-                "D55" => &spektrafilm_math::spectral::ILLUMINANT_D55,
-                "D65" => &spektrafilm_math::spectral::ILLUMINANT_D65,
-                "D50" => &spektrafilm_math::spectral::ILLUMINANT_D50,
-                _ => &spektrafilm_math::spectral::ILLUMINANT_D55,
-            };
-            let ref_illu_f64: &[f64] = match film.info.reference_illuminant.as_str() {
-                "D50" => &spektrafilm_math::spectral::ILLUMINANT_D50_F64,
-                "D65" => &spektrafilm_math::spectral::ILLUMINANT_D65_F64,
-                _ => &spektrafilm_math::spectral::ILLUMINANT_D55_F64,
-            };
-            let tc_lut: TcLut = crate::spectral_service::compute_tc_lut_with_window(
-                &spectra_lut,
-                &sensitivity,
-                &window_params,
-                ref_illu_f64,
-            );
-            let raw_img = hanatos2025_rgb_to_raw(&img, &tc_lut, "sRGB", ref_illu);
-            let r = raw_img.get(0, 0);
-            eprintln!(
-                "Rust raw (window=ON): [{:.17}, {:.17}, {:.17}]",
-                r[0] as f64, r[1] as f64, r[2] as f64
-            );
-            eprintln!("Python raw (window=ON): [1.01285667, 0.98939848, 0.91792727]");
-        }
-
         let pipeline = Pipeline::new_with_spectral(film, print, params, &dir).unwrap();
 
-        // Trace stage-by-stage instead of pipeline.process
-        let img_clone = ImageBuf::from_data(
-            1,
-            1,
-            vec![from_f64(0.184), from_f64(0.184), from_f64(0.184)],
-        );
+        let img = ImageBuf::from_data(1, 1, vec![from_f64(0.184); 3]);
         let log_raw = crate::stages::filming::expose(
-            &img_clone,
+            &img,
             &pipeline.film,
             &pipeline.params,
             &backend,
             pipeline.tc_lut(),
+            None,
+            1.0,
         );
-        let lr = log_raw.get(0, 0);
-        eprintln!(
-            "[stage1] Rust log_raw: [{:.17}, {:.17}, {:.17}]",
-            lr[0] as f64, lr[1] as f64, lr[2] as f64
-        );
-        eprintln!(
-            "[stage1] Python log_raw:  [0.00554799,           -0.00462876,           -0.03719173]"
+        check(
+            "log_e_film",
+            log_raw.get(0, 0),
+            [
+                0.0055470069132583094,
+                -0.0046291033978263334,
+                -0.037191809233513652,
+            ],
         );
 
         let density_cmy =
             crate::stages::filming::develop(&log_raw, &pipeline.film, &pipeline.params, &backend);
-        let dc = density_cmy.get(0, 0);
-        eprintln!(
-            "[stage2] Rust density_cmy: [{:.17}, {:.17}, {:.17}]",
-            dc[0] as f64, dc[1] as f64, dc[2] as f64
-        );
-        eprintln!(
-            "[stage2] Python density_cmy: [0.69714374, 0.70212214, 0.84938188]  (raw curves)"
-        );
-        eprintln!(
-            "[stage2] Python density_cmy (normalized curves used in actual simulate): [0.69782169, 0.70283951, 0.85011552]"
+        check(
+            "cmy_film",
+            density_cmy.get(0, 0),
+            [
+                0.68987884029422741,
+                0.70272493086202847,
+                0.84508598425873571,
+            ],
         );
 
         let log_raw_print = crate::stages::printing::expose_calibrated(
@@ -417,13 +388,18 @@ mod tests {
             &backend,
             pipeline.print_illuminant_slice(),
             pipeline.print_exposure_factor(),
+            pipeline.preflash_raw(),
+            1.0,
         );
-        let lrp = log_raw_print.get(0, 0);
-        eprintln!(
-            "[stage3] Rust log_raw_print: [{:.17}, {:.17}, {:.17}]",
-            lrp[0] as f64, lrp[1] as f64, lrp[2] as f64
+        check(
+            "log_e_print",
+            log_raw_print.get(0, 0),
+            [
+                -0.0058943653645049067,
+                0.0016183559749744021,
+                0.0019890502790478998,
+            ],
         );
-        eprintln!("[stage3] Python log_raw_print: [0.00469502, 0.00936077, -0.01640847]");
 
         let density_print = crate::stages::printing::develop(
             &log_raw_print,
@@ -431,24 +407,14 @@ mod tests {
             &pipeline.params,
             &backend,
         );
-        let dp = density_print.get(0, 0);
-        eprintln!(
-            "[stage4] Rust density_print: [{:.17}, {:.17}, {:.17}]",
-            dp[0] as f64, dp[1] as f64, dp[2] as f64
+        check(
+            "cmy_print",
+            density_print.get(0, 0),
+            [
+                0.64189250593682268,
+                0.54211141885697389,
+                0.52002829327970834,
+            ],
         );
-        eprintln!("[stage4] Python density_print: [0.62759807, 0.52925085, 0.50075131]");
-
-        let rgb = crate::stages::scanning::scan(
-            &density_print,
-            &pipeline.print,
-            &pipeline.params,
-            &backend,
-        );
-        let rp = rgb.get(0, 0);
-        eprintln!(
-            "[stage5] Rust rgb: [{:.17}, {:.17}, {:.17}]",
-            rp[0] as f64, rp[1] as f64, rp[2] as f64
-        );
-        eprintln!("[stage5] Python rgb: [0.18088850, 0.18547697, 0.19921836]");
     }
 }

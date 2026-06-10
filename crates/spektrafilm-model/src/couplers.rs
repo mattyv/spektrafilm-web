@@ -93,9 +93,7 @@ pub fn compute_exposure_correction(
         // The tail kernel is EXPONENTIAL (3-Gaussian mixture), not
         // another Gaussian — using two Gaussians here was a structural
         // diff vs Python.
-        use spektrafilm_math::gaussian::{
-            exponential_filter_channel, gaussian_blur_channel,
-        };
+        use spektrafilm_math::gaussian::{exponential_filter_channel, gaussian_blur_channel};
         let w_img = correction.width;
         let h_img = correction.height;
         let n_pix = (w_img as usize) * (h_img as usize);
@@ -154,9 +152,21 @@ pub fn apply_density_correction(
     // come in; we promote to f64 just for the matrix coupling.
     let norm_curves = normalize_density_curves(density_curves);
     let matrix_scaled_f32: [[f32; 3]; 3] = [
-        [matrix_scaled[0][0] as f32, matrix_scaled[0][1] as f32, matrix_scaled[0][2] as f32],
-        [matrix_scaled[1][0] as f32, matrix_scaled[1][1] as f32, matrix_scaled[1][2] as f32],
-        [matrix_scaled[2][0] as f32, matrix_scaled[2][1] as f32, matrix_scaled[2][2] as f32],
+        [
+            matrix_scaled[0][0] as f32,
+            matrix_scaled[0][1] as f32,
+            matrix_scaled[0][2] as f32,
+        ],
+        [
+            matrix_scaled[1][0] as f32,
+            matrix_scaled[1][1] as f32,
+            matrix_scaled[1][2] as f32,
+        ],
+        [
+            matrix_scaled[2][0] as f32,
+            matrix_scaled[2][1] as f32,
+            matrix_scaled[2][2] as f32,
+        ],
     ];
     let density_curves_0 =
         compute_curves_before_dir(&norm_curves, log_exposure, &matrix_scaled_f32, positive);

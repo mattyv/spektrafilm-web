@@ -64,7 +64,7 @@ Currently only on MacOS, windows compability was tested at early stages, so some
     --film kodak_gold_200 --paper kodak_portra_endura --data-dir data
 
 # f64 CPU (reference)
-SPEKTRAFILM_BACKEND=cpu VECLIB_MAXIMUM_THREADS=1 \
+SPEKTRAFILM_BACKEND=cpu \
     ./target/release/spektrafilm-f64 process input.ORF -o out.png \
     --film kodak_gold_200 --paper kodak_portra_endura --data-dir data
 
@@ -74,8 +74,6 @@ SPEKTRAFILM_BACKEND=cpu VECLIB_MAXIMUM_THREADS=1 \
 # List available film + paper profiles
 ./target/release/spektrafilm list-profiles --data-dir data
 ```
-
-The `VECLIB_MAXIMUM_THREADS=1` on macOS pins Accelerate BLAS to single-thread so the per-stage rayon chunking (see *Performance* below) doesn't fight Accelerate's own thread pool.
 
 ## Parity
 
@@ -105,8 +103,7 @@ What gets it there:
 
 - **PCHIP LUTs** for the spectral integrations (enlarger + scanner) — same approximation Python uses, same accuracy budget.
 - **`vForce vvpow`** for `10^x` on the spectral chain — Accelerate's SIMD pow, bit-identical to libm `pow(10, x)`.
-- **Row-chunked dgemm across rayon** — Accelerate BLAS doesn't thread K=3 contractions, so we split the M dimension ourselves.
-- **`VECLIB_MAXIMUM_THREADS=1`** on the export child so Accelerate's internal pool doesn't contend with rayon.
+- **Accelerate BLAS dgemm** for the spectral reductions — a single `cblas_dgemm` per contraction, parallelised internally by Accelerate. (It is not safe to call concurrently from multiple threads, so the matmul is never split across rayon.)
 - **Parallelised hot per-pixel loops** in the printing and scanning post-stages.
 
 GPU preview path uses wgpu compute shaders (`crates/spektrafilm-shaders/wgsl/`). All shaders are f32 (WGSL has no f64); the GPU path drives the live preview while the export reaches for f64 CPU. End-to-end preview render: ~250 ms at 6 MP, ~700 ms at 16 MP on Apple Silicon.
@@ -128,6 +125,7 @@ data/
   filters/             neutral-print enlarger filter database
 scripts/parity/        Python ↔ Rust comparison harness (spektra_compare.py, etc.)
 tests/                 reference outputs + integration test fixtures
+docs/upstream-sync.md  porting status of upstream 0.3.4 colour features + backlog
 ```
 
 ## Credits

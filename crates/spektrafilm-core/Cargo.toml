@@ -23,3 +23,4 @@ tracing.workspace = true
 libm.workspace = true
 cblas = "0.4"
 blas-src = { version = "0.10", features = ["accelerate"] }
+image.workspace = true

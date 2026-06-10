@@ -278,7 +278,11 @@ pub fn pchip_interp(prepared: &PreparedPchip3d, r: f64, g: f64, b: f64) -> [f64;
         );
 
         // Mix orthogonal-axis slopes linearly along x.
-        let sy00 = linear_mix(sy[idx4(size, i, j, k, c)], sy[idx4(size, i + 1, j, k, c)], tr);
+        let sy00 = linear_mix(
+            sy[idx4(size, i, j, k, c)],
+            sy[idx4(size, i + 1, j, k, c)],
+            tr,
+        );
         let sy10 = linear_mix(
             sy[idx4(size, i, j + 1, k, c)],
             sy[idx4(size, i + 1, j + 1, k, c)],

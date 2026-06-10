@@ -65,6 +65,7 @@ pub trait ComputeBackend: Send + Sync {
         illuminant: &[f64],
         sensitivity: &[[f64; 3]],
         normalization_factor: f64,
+        preflash: [f64; 3],
     ) -> ImageBuf {
         cpu_backend::print_spectral_cpu(
             density_cmy,
@@ -73,6 +74,7 @@ pub trait ComputeBackend: Send + Sync {
             illuminant,
             sensitivity,
             normalization_factor,
+            preflash,
         )
     }
 
@@ -89,12 +91,14 @@ pub trait ComputeBackend: Send + Sync {
         tc_lut: &spektrafilm_math::spectral::TcLut,
         color_space: &str,
         ref_illuminant: &[f32],
+        cat16: bool,
     ) -> ImageBuf {
         spektrafilm_math::spectral::hanatos2025_rgb_to_raw(
             image,
             tc_lut,
             color_space,
             ref_illuminant,
+            cat16,
         )
     }
 
@@ -128,6 +132,13 @@ pub trait ComputeBackend: Send + Sync {
         None
     }
 
+    /// True for f32 GPU backends where effects may trade exactness for
+    /// speed (the diffusion filter uses a downsampled sum-of-Gaussians
+    /// instead of the exact FFT convolution). CPU keeps the exact path.
+    fn is_gpu(&self) -> bool {
+        false
+    }
+
     fn name(&self) -> &str;
 }
 
@@ -136,8 +147,8 @@ pub trait ComputeBackend: Send + Sync {
 /// DIR couplers, …) doesn't churn every callsite.
 pub struct FilmChainParams<'a> {
     pub image: &'a ImageBuf,
-    pub tc_lut: &'a spektrafilm_math::spectral::TcLut,
-    pub rgb_to_adapted_xyz: &'a [[f64; 3]; 3],
+    /// RGB → film-raw front pass (the configured upsampler).
+    pub front: FrontPass<'a>,
     pub film_log_exposure: &'a [f64],
     pub film_density_curves_normalized: &'a [[f64; 3]],
     pub film_gamma: f64,
@@ -151,9 +162,24 @@ pub struct FilmChainParams<'a> {
     pub print_gamma: f64,
     pub print_channel_density: &'a [[f64; 3]],
     pub print_base_density: &'a [f64],
+    /// Constant enlarger preflash raw 3-vector, added to the print exposure
+    /// before the inner log10 (Python `_compute_raw_preflash`). `[0; 3]` off.
+    pub preflash: [f64; 3],
     pub viewing_illuminant: &'a [f64],
     pub scan_normalization: f64,
     pub scan_xyz_to_rgb: &'a [[f64; 3]; 3],
+    /// B&W/slide scanner luminance remap `(m, q)` applied per-pixel on the
+    /// scan XYZ (`clip(m·Y+q, 0, 1)/(Y+1e-10)`). `None` is identity. The
+    /// filming/printing exposure halves of the correction are folded by the
+    /// caller into `rgb_to_adapted_xyz` / `print_normalization_factor`.
+    pub bw_xyz_remap: Option<(f64, f64)>,
+    /// Scan the developed film directly instead of printing onto paper.
+    /// When true the print_spectral + print density-curve passes are
+    /// skipped and scan_spectral runs on the film density buffer using the
+    /// film's `film_channel_density` / `film_base_density` (the caller sets
+    /// `viewing_illuminant` / `scan_normalization` / `scan_xyz_to_rgb` from
+    /// the film's viewing illuminant). Mirrors the CPU `scan_film` path.
+    pub scan_film: bool,
     /// Optional halation pass — when `Some`, inserted on the raw film
     /// exposure buffer between hanatos2025 and log10.
     pub halation: Option<HalationGpuParams>,
@@ -170,10 +196,52 @@ pub struct FilmChainParams<'a> {
     /// final RGB buffer. Lognormal-distributed per-pixel surface noise +
     /// blur + per-channel illuminant offset.
     pub glare: Option<GlareGpuParams>,
+    /// Optional output gamut compression pass — applied after glare on
+    /// the final RGB buffer, before unsharp (matching the CPU scanning
+    /// order). When set, scan_spectral skips its [0,1] clamp so the
+    /// compressor sees the out-of-gamut values it needs.
+    pub gamut: Option<GamutGpuParams<'a>>,
     /// Optional unsharp mask pass — applied after glare (last step
     /// before readback). Blur σ in pixels + amount scalar; both come
     /// from `scanner.unsharp_mask`.
     pub unsharp: Option<UnsharpGpuParams>,
+    /// Optional camera lens diffusion filter — applied on the raw film
+    /// exposure buffer right after hanatos2025, before halation (matching
+    /// the CPU filming order). A downsampled sum-of-Gaussians; see
+    /// `DiffusionGpuPlan`.
+    pub diffusion: Option<DiffusionGpuPlan>,
+}
+
+/// RGB → film-raw front pass of the GPU-resident chain. Both variants are
+/// homogeneous in the input RGB, so the caller folds the exposure scale
+/// (auto-exposure × EV compensation × B&W filming correction) into the
+/// matrix — no separate scale pass.
+pub enum FrontPass<'a> {
+    /// Hanatos2025 spectral upsampling: per-pixel chromaticity LUT lookup.
+    Hanatos2025 {
+        tc_lut: &'a spektrafilm_math::spectral::TcLut,
+        /// Combined input-RGB → CAT-adapted-XYZ matrix (row-major).
+        rgb_to_adapted_xyz: [[f64; 3]; 3],
+    },
+    /// Mallett2019 reflectance-basis upsampling: one rgb → raw 3×3 matmul
+    /// (`core · M_cs`, see `spektrafilm-core/src/mallett.rs`).
+    Mallett2019 { matrix: [[f64; 3]; 3] },
+}
+
+/// Pre-computed plan for the GPU-resident diffusion filter. The per-channel
+/// PSF is decomposed into Gaussian components (3 per PSF sub-component) and
+/// the whole scattered field is computed on an image downsampled by `d` so
+/// the blur σ stay small. `sigmas`/`coeffs` are parallel: component `i`
+/// blurs the downsampled image at `sigmas[i]` (working-resolution px) and
+/// adds `coeffs[i]` (per-channel) into the accumulator.
+#[derive(Debug, Clone)]
+pub struct DiffusionGpuPlan {
+    pub d: u32,
+    pub small_w: u32,
+    pub small_h: u32,
+    pub p_s: f32,
+    pub sigmas: Vec<f32>,
+    pub coeffs: Vec<[f32; 3]>,
 }
 
 /// DIR couplers parameters for the GPU-resident matmul + diffusion + final
@@ -210,6 +278,34 @@ pub struct GrainGpuParams {
     pub n_sub_layers: u32,
     pub base_seed: u32,
     pub grain_blur: f32,
+    /// One shared noise field across all channels (B&W single emulsion)
+    /// instead of independent per-channel RNG streams.
+    pub monochrome: bool,
+}
+
+/// Output gamut compression parameters for the GPU-resident per-pixel pass.
+/// CPU equivalent: `OutputGamutCompress::compress`. The `C_max(L, h)` table
+/// is baked once on the CPU (bisection against the output cube) and uploaded
+/// as a storage buffer; the shader only does the per-pixel forward/inverse
+/// perceptual transform + Reinhard knee.
+#[derive(Debug, Clone, Copy)]
+pub struct GamutGpuParams<'a> {
+    /// 0 = aces_rgc, 1 = oklch, 2 = oklrab, 3 = cam16ucs — must match the
+    /// mode dispatch in `gamut_compress.wgsl`.
+    pub mode: u32,
+    /// Reinhard knee on normalized chroma: (threshold, limit, power).
+    pub knee: [f32; 3],
+    /// One-sided lightness compression (threshold, limit, power); `None` off.
+    pub lightness: Option<[f32; 3]>,
+    /// Perceptual lightness of the output white (1.0 OkLab, ~100 CAM16-UCS).
+    pub l_white: f32,
+    /// Lightness-axis bounds of the `C_max` table grid.
+    pub l_min: f32,
+    pub l_max: f32,
+    /// `C_max(L, h)` table, row-major `[n_l][n_h]`. Empty for aces_rgc.
+    pub cmax: &'a [f64],
+    pub n_l: u32,
+    pub n_h: u32,
 }
 
 /// Unsharp mask parameters: blur sigma in pixels and amount.

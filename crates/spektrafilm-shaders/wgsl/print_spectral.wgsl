@@ -12,6 +12,10 @@ struct Params {
     height: u32,
     n_wavelengths: u32,
     normalization_factor: f32,
+    // Spatially-constant preflash exposure (per channel), added before log10.
+    // Zero unless the enlarger preflash is active. vec3 is 16-byte aligned,
+    // so it lands at offset 16 right after the four leading scalars.
+    preflash: vec3<f32>,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -54,7 +58,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         raw.z += light * sensitivity[cd_base + 2u];
     }
 
-    raw *= params.normalization_factor;
+    raw = raw * params.normalization_factor + params.preflash;
 
     // Python: log10(np.fmax(raw, 0.0) + 1e-10)
     output[base] = log(max(raw.x, 0.0) + 1e-10) / log(10.0);

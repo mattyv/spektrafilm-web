@@ -17,3 +17,4 @@ thiserror.workspace = true
 half = "2.7"
 libm.workspace = true
 rand_mt = "5"
+rustfft.workspace = true

@@ -136,9 +136,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // xy chromaticity + tc transform (Python _tri2quad).
-    let xc = clamp(xyz.x / b, 0.0, 1.0);
-    let yc = clamp(xyz.y / b, 0.0, 1.0);
+    // xy chromaticity + tc transform (Python _tri2quad). No xy clip
+    // (upstream 0.3.4 removed it — the input gamut compression baked into
+    // the tc_lut handles OOG chromaticities); the tc clamps below keep the
+    // LUT lookup coordinates in-bounds.
+    let xc = xyz.x / b;
+    let yc = xyz.y / b;
     let omx = max(1.0 - xc, 1e-10);
     let tx = clamp((1.0 - xc) * (1.0 - xc), 0.0, 1.0);
     let ty = clamp(yc / omx, 0.0, 1.0);

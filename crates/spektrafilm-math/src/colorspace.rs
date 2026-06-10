@@ -246,12 +246,52 @@ pub fn chromatic_adaptation_matrix_f64(src_white: [f64; 3], dst_white: [f64; 3])
         [0.454369041975359, 0.473533154307412, 0.072097803717229],
         [-0.009627608738429, -0.005698031216113, 1.015325639954543],
     ];
+    von_kries(src_white, dst_white, &FWD, &INV)
+}
 
+/// CAT16 (Li et al. 2017) von Kries chromatic adaptation. Same form as
+/// `chromatic_adaptation_matrix_f64` (CAT02) but with the CIECAM16 cone
+/// matrix `M16`, which avoids CAT02's cone-primary instabilities around
+/// blue/violet. Matches colour-science's
+/// `matrix_chromatic_adaptation_VonKries(..., transform="CAT16")`.
+pub fn chromatic_adaptation_matrix_cat16_f64(
+    src_white: [f64; 3],
+    dst_white: [f64; 3],
+) -> [[f64; 3]; 3] {
+    const FWD: [[f64; 3]; 3] = [
+        [0.401288, 0.650173, -0.051461],
+        [-0.250268, 1.204414, 0.045854],
+        [-0.002079, 0.048952, 0.953127],
+    ];
+    const INV: [[f64; 3]; 3] = [
+        [1.8620678550872327, -1.0112546305316843, 0.14918677544445175],
+        [
+            0.3875265432361372,
+            0.6214474419314753,
+            -0.008973985167612516,
+        ],
+        [
+            -0.015841498849333863,
+            -0.03412293802851557,
+            1.0499644368778496,
+        ],
+    ];
+    von_kries(src_white, dst_white, &FWD, &INV)
+}
+
+/// Shared von Kries adaptation: `inv · diag(dst_lms/src_lms) · fwd`, where
+/// `fwd`/`inv` are the cone matrix and its inverse for the chosen transform.
+fn von_kries(
+    src_white: [f64; 3],
+    dst_white: [f64; 3],
+    fwd: &[[f64; 3]; 3],
+    inv: &[[f64; 3]; 3],
+) -> [[f64; 3]; 3] {
     let mut src_lms = [0.0f64; 3];
     let mut dst_lms = [0.0f64; 3];
     for i in 0..3 {
-        src_lms[i] = FWD[i][0] * src_white[0] + FWD[i][1] * src_white[1] + FWD[i][2] * src_white[2];
-        dst_lms[i] = FWD[i][0] * dst_white[0] + FWD[i][1] * dst_white[1] + FWD[i][2] * dst_white[2];
+        src_lms[i] = fwd[i][0] * src_white[0] + fwd[i][1] * src_white[1] + fwd[i][2] * src_white[2];
+        dst_lms[i] = fwd[i][0] * dst_white[0] + fwd[i][1] * dst_white[1] + fwd[i][2] * dst_white[2];
     }
     let gain = [
         dst_lms[0] / src_lms[0],
@@ -262,9 +302,9 @@ pub fn chromatic_adaptation_matrix_f64(src_white: [f64; 3], dst_white: [f64; 3])
     let mut result = [[0.0f64; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
-            result[i][j] = INV[i][0] * gain[0] * FWD[0][j]
-                + INV[i][1] * gain[1] * FWD[1][j]
-                + INV[i][2] * gain[2] * FWD[2][j];
+            result[i][j] = inv[i][0] * gain[0] * fwd[0][j]
+                + inv[i][1] * gain[1] * fwd[1][j]
+                + inv[i][2] * gain[2] * fwd[2][j];
         }
     }
     result
@@ -302,6 +342,43 @@ fn mat3_mul3(a: &[[f32; 3]; 3], b: &[[f32; 3]; 3], out: &mut [[f32; 3]; 3]) {
 mod tests {
     use super::*;
     use crate::precision::{from_f64, srgb_decode, srgb_encode};
+
+    /// CAT16 adaptation matches colour-science's
+    /// `matrix_chromatic_adaptation_VonKries(transform="CAT16")` for the
+    /// ProPhoto-white → D55 case used by the input projection.
+    #[test]
+    fn cat16_matches_colour() {
+        let src = [0.9642956764295677, 1.0, 0.8251046025104605]; // ProPhoto white
+        let dst = [0.9567982961086806, 1.0, 0.9213965001151279]; // D55
+        let got = chromatic_adaptation_matrix_cat16_f64(src, dst);
+        let want = [
+            [
+                0.9955740273098072,
+                -0.016544957254590615,
+                0.01613798204777648,
+            ],
+            [
+                -0.0022206862456965637,
+                1.0026392099167525,
+                -0.0006033317106774956,
+            ],
+            [
+                -0.00013585839424725028,
+                0.0054854466982645,
+                1.1102132484680078,
+            ],
+        ];
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (got[i][j] - want[i][j]).abs() < 1e-12,
+                    "[{i}][{j}] got {} want {}",
+                    got[i][j],
+                    want[i][j]
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_srgb_roundtrip() {
