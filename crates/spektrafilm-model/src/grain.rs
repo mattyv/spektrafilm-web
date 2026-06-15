@@ -5,6 +5,18 @@ use spektrafilm_gpu::ComputeBackend;
 use spektrafilm_math::gaussian;
 use spektrafilm_math::image::ImageBuf;
 use spektrafilm_math::precision::{Scalar, ZERO, from_f64};
+use rayon::prelude::*;
+use std::time::Instant;
+
+fn stage_timings_enabled() -> bool {
+    std::env::var_os("SPEKTRAFILM_STAGE_TIMINGS").is_some()
+}
+
+fn print_stage_timing(enabled: bool, stage: &str, start: Instant) {
+    if enabled {
+        eprintln!("stage {stage}: {} ms", start.elapsed().as_millis());
+    }
+}
 
 /// Apply the Poisson-binomial grain particle model to a single-channel density image.
 ///
@@ -101,6 +113,7 @@ pub fn apply_grain_to_density(
     monochrome: bool,
     backend: &dyn ComputeBackend,
 ) -> ImageBuf {
+    let stage_timings = stage_timings_enabled();
     let w = density_cmy.width;
     let h = density_cmy.height;
     let pixel_area = (pixel_size_um as f64) * (pixel_size_um as f64);
@@ -110,55 +123,70 @@ pub fn apply_grain_to_density(
         density_max_curves[2] + density_min[2],
     ];
 
-    let mut out = ImageBuf::new(w, h);
-
-    for ch in 0..3 {
-        let particle_area = agx_particle_area_um2 * agx_particle_scale[ch];
-        let mut n_particles = pixel_area / particle_area;
-        if n_sub_layers > 1 {
-            n_particles /= n_sub_layers as f64;
-        }
-
-        // Add density_min to input (kept in Scalar precision)
-        let dmin_s = from_f64(density_min[ch]);
-        let density_ch: Vec<Scalar> = density_cmy.pixels().map(|px| px[ch] + dmin_s).collect();
-
-        let mut grain_sum = vec![ZERO; density_ch.len()];
-
-        for sl in 0..n_sub_layers {
-            // Monochrome (B&W): one shared noise field — every lane draws
-            // from channel 0's RNG stream (upstream n_channels==1 has a
-            // single emulsion, seed ch=0).
-            let seed_ch = if monochrome { 0 } else { ch as u64 };
-            let seed = seed_ch + (sl as u64) * 10;
-            let g = layer_particle_model(
-                &density_ch,
-                w,
-                h,
-                density_max[ch],
-                n_particles,
-                grain_uniformity[ch],
-                seed,
-                0.0,
-            );
-            for (s, &v) in grain_sum.iter_mut().zip(g.iter()) {
-                *s += v;
+    let channels: Vec<(usize, Vec<Scalar>)> = (0..3)
+        .into_par_iter()
+        .map(|ch| {
+            let t_ch = Instant::now();
+            let particle_area = agx_particle_area_um2 * agx_particle_scale[ch];
+            let mut n_particles = pixel_area / particle_area;
+            if n_sub_layers > 1 {
+                n_particles /= n_sub_layers as f64;
             }
-        }
 
-        // Average sub-layers
-        let scale = from_f64(1.0 / n_sub_layers as f64);
-        for v in &mut grain_sum {
-            *v = *v * scale - dmin_s;
-        }
+            // Add density_min to input (kept in Scalar precision)
+            let dmin_s = from_f64(density_min[ch]);
+            let t = Instant::now();
+            let density_ch: Vec<Scalar> =
+                density_cmy.pixels().map(|px| px[ch] + dmin_s).collect();
+            print_stage_timing(stage_timings, "grain.extract_channel", t);
 
+            let mut grain_sum = vec![ZERO; density_ch.len()];
+
+            for sl in 0..n_sub_layers {
+                let t = Instant::now();
+                // Monochrome (B&W): one shared noise field — every lane draws
+                // from channel 0's RNG stream (upstream n_channels==1 has a
+                // single emulsion, seed ch=0).
+                let seed_ch = if monochrome { 0 } else { ch as u64 };
+                let seed = seed_ch + (sl as u64) * 10;
+                let g = layer_particle_model(
+                    &density_ch,
+                    w,
+                    h,
+                    density_max[ch],
+                    n_particles,
+                    grain_uniformity[ch],
+                    seed,
+                    0.0,
+                );
+                print_stage_timing(stage_timings, "grain.layer_particle_model", t);
+                for (s, &v) in grain_sum.iter_mut().zip(g.iter()) {
+                    *s += v;
+                }
+            }
+
+            // Average sub-layers
+            let scale = from_f64(1.0 / n_sub_layers as f64);
+            for v in &mut grain_sum {
+                *v = *v * scale - dmin_s;
+            }
+
+            print_stage_timing(stage_timings, "grain.channel_total", t_ch);
+            (ch, grain_sum)
+        })
+        .collect();
+
+    let mut out = ImageBuf::new(w, h);
+    for (ch, grain_sum) in channels {
         out.write_channel(ch, &grain_sum);
     }
 
     // Final blur — typically a few px sigma at 1–6 MP, big enough that the
     // GPU separable kernel wins.
     if grain_blur > 0.4 {
+        let t = Instant::now();
         out = backend.gaussian_blur(&out, grain_blur);
+        print_stage_timing(stage_timings, "grain.final_blur", t);
     }
 
     out

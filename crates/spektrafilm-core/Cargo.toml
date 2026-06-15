@@ -21,6 +21,12 @@ rayon.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 libm.workspace = true
+image.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
 cblas = "0.4"
 blas-src = { version = "0.10", features = ["accelerate"] }
-image.workspace = true
+
+[target.'cfg(all(not(target_os = "macos"), not(target_os = "windows")))'.dependencies]
+cblas = "0.4"
+blas-src = { version = "0.10", features = ["openblas"] }

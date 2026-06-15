@@ -446,7 +446,6 @@ fn load_raw(path: &Path) -> Result<ImageBuf> {
         decode_file,
         imgop::develop::{ProcessingStep, RawDevelop},
     };
-    use rayon::prelude::*;
     let raw = decode_file(path).map_err(|e| anyhow::anyhow!("RAW decode failed: {e:?}"))?;
     let mut dev = RawDevelop::default();
     // Drop the sRGB gamma step — we want linear sRGB primaries; the
@@ -455,18 +454,57 @@ fn load_raw(path: &Path) -> Result<ImageBuf> {
     let intermediate = dev
         .develop_intermediate(&raw)
         .map_err(|e| anyhow::anyhow!("RAW develop failed: {e:?}"))?;
-    let dyn_img = intermediate
-        .to_dynamic_image()
-        .ok_or_else(|| anyhow::anyhow!("RAW develop: empty image"))?;
-    let rgb16 = dyn_img.to_rgb16();
-    let (w, h) = (rgb16.width(), rgb16.height());
-    let inv_max = 1.0f32 / 65535.0;
-    let scalars: Vec<spektrafilm_math::precision::Scalar> = rgb16
-        .as_raw()
-        .par_iter()
-        .map(|&v| spektrafilm_math::precision::from_f32(v as f32 * inv_max))
-        .collect();
-    Ok(ImageBuf::from_data(w, h, scalars))
+    rawler_intermediate_to_image_buf(intermediate)
+}
+
+fn rawler_intermediate_to_image_buf(
+    intermediate: rawler::imgop::develop::Intermediate,
+) -> Result<ImageBuf> {
+    use rayon::prelude::*;
+    use rawler::imgop::develop::Intermediate;
+
+    let floor = |v: f32| spektrafilm_math::precision::from_f32(v.max(0.0));
+    match intermediate {
+        Intermediate::Monochrome(pixels) => {
+            let scalars: Vec<spektrafilm_math::precision::Scalar> = pixels
+                .data
+                .par_iter()
+                .flat_map_iter(|&v| {
+                    let v = floor(v);
+                    [v, v, v]
+                })
+                .collect();
+            Ok(ImageBuf::from_data(
+                pixels.width as u32,
+                pixels.height as u32,
+                scalars,
+            ))
+        }
+        Intermediate::ThreeColor(pixels) => {
+            let scalars: Vec<spektrafilm_math::precision::Scalar> = pixels
+                .data
+                .par_iter()
+                .flat_map_iter(|px| [floor(px[0]), floor(px[1]), floor(px[2])])
+                .collect();
+            Ok(ImageBuf::from_data(
+                pixels.width as u32,
+                pixels.height as u32,
+                scalars,
+            ))
+        }
+        Intermediate::FourColor(pixels) => {
+            let scalars: Vec<spektrafilm_math::precision::Scalar> = pixels
+                .data
+                .par_iter()
+                .flat_map_iter(|px| [floor(px[0]), floor(px[1]), floor(px[2])])
+                .collect();
+            Ok(ImageBuf::from_data(
+                pixels.width as u32,
+                pixels.height as u32,
+                scalars,
+            ))
+        }
+    }
 }
 
 /// Decode an image with the decoder's memory limits disabled. The

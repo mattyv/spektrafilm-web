@@ -8,10 +8,17 @@ use crate::{ComputeBackend, Lut3D};
 // Pull in BLAS-src so `cblas_dgemm` is available at link time. The
 // provider crate (Accelerate on macOS, OpenBLAS elsewhere) is selected
 // in this crate's Cargo.toml.
+#[cfg(not(target_os = "windows"))]
 #[allow(unused_imports)]
 use blas_src as _;
 
 use spektrafilm_math::vforce::exp10_inplace;
+
+#[derive(Clone, Copy)]
+enum Transpose {
+    None,
+    Ordinary,
+}
 
 /// Single-call dgemm `C[M×N] = A[M×K] · op(B)` in row-major layout.
 ///
@@ -35,16 +42,20 @@ fn dgemm_blas(
     m: usize,
     n: usize,
     k: usize,
-    trans_b: cblas::Transpose,
+    trans_b: Transpose,
     ldb: i32,
 ) {
     assert_eq!(a.len(), m * k, "dgemm_blas: a.len() != m*k");
     assert_eq!(c.len(), m * n, "dgemm_blas: c.len() != m*n");
+    #[cfg(not(target_os = "windows"))]
     unsafe {
         cblas::dgemm(
             cblas::Layout::RowMajor,
             cblas::Transpose::None,
-            trans_b,
+            match trans_b {
+                Transpose::None => cblas::Transpose::None,
+                Transpose::Ordinary => cblas::Transpose::Ordinary,
+            },
             m as i32,
             n as i32,
             k as i32,
@@ -57,6 +68,23 @@ fn dgemm_blas(
             c,
             n as i32,
         );
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = ldb;
+        c.par_chunks_exact_mut(n).enumerate().for_each(|(row, crow)| {
+            for col in 0..n {
+                let mut sum = 0.0f64;
+                for kk in 0..k {
+                    let bv = match trans_b {
+                        Transpose::None => b[kk * n + col],
+                        Transpose::Ordinary => b[col * k + kk],
+                    };
+                    sum += a[row * k + kk] * bv;
+                }
+                crow[col] = sum;
+            }
+        });
     }
 }
 
@@ -194,7 +222,7 @@ fn spectral_to_proj_tiled(
             tpx,
             n_wl,
             3,
-            cblas::Transpose::Ordinary,
+            Transpose::Ordinary,
             3,
         );
         // Three-pass vForce: -(d + base) → 10^x → ×illuminant (NaN→0).
@@ -226,7 +254,7 @@ fn spectral_to_proj_tiled(
             tpx,
             3,
             n_wl,
-            cblas::Transpose::None,
+            Transpose::None,
             3,
         );
         start += tpx;
@@ -387,7 +415,7 @@ pub fn scan_spectral_cpu(
         n_pix,
         3,
         3,
-        cblas::Transpose::Ordinary,
+        Transpose::Ordinary,
         3,
     );
 

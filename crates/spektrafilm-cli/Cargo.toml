@@ -9,6 +9,11 @@ name = "spektrafilm"
 path = "src/main.rs"
 
 [[bin]]
+name = "spektrafilm-f64"
+path = "src/main.rs"
+required-features = ["precision-f64"]
+
+[[bin]]
 name = "decode_raw_gui"
 path = "src/bin/decode_raw_gui.rs"
 

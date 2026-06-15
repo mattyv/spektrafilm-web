@@ -8,9 +8,20 @@ use spektrafilm_math::colorspace;
 use spektrafilm_math::image::ImageBuf;
 use spektrafilm_math::precision::{from_f32, from_f64, to_f32};
 use spektrafilm_math::spectral::{self, TcLut};
+use std::time::Instant;
 
 use crate::params::RuntimeParams;
 use crate::profile::Profile;
+
+fn stage_timings_enabled() -> bool {
+    std::env::var_os("SPEKTRAFILM_STAGE_TIMINGS").is_some()
+}
+
+fn print_stage_timing(enabled: bool, stage: &str, start: Instant) {
+    if enabled {
+        eprintln!("stage {stage}: {} ms", start.elapsed().as_millis());
+    }
+}
 
 /// Compute pixel size in micrometers from film format and image dimensions.
 pub fn pixel_size_um(film_format_mm: f32, width: u32, height: u32) -> f32 {
@@ -269,11 +280,12 @@ fn apply_mallett_matrix(image: &ImageBuf, m: &[[f64; 3]; 3]) -> ImageBuf {
 #[allow(clippy::too_many_arguments)]
 pub fn expose(
     image: &ImageBuf,
-    film: &Profile,
+    _film: &Profile,
     params: &RuntimeParams,
     backend: &dyn ComputeBackend,
     tc_lut: Option<&TcLut>,
     mallett_core: Option<&[[f64; 3]; 3]>,
+    front_illuminant: &[f32],
     bw_filming_correction: f64,
 ) -> ImageBuf {
     let pix_um = pixel_size_um(params.camera.film_format_mm, image.width, image.height);
@@ -299,12 +311,11 @@ pub fn expose(
         apply_mallett_matrix(&rgb, &m)
     } else if let Some(lut) = tc_lut {
         // Full Hanatos2025 spectral upsampling with CAT02 adaptation.
-        let ref_illuminant = select_illuminant(&film.info.reference_illuminant);
         backend.hanatos2025_rgb_to_raw(
             &rgb,
             lut,
             &params.io.input_color_space,
-            ref_illuminant,
+            front_illuminant,
             params.settings.use_cat16,
         )
     } else {
@@ -403,6 +414,7 @@ pub fn develop(
     params: &RuntimeParams,
     backend: &dyn ComputeBackend,
 ) -> ImageBuf {
+    let stage_timings = stage_timings_enabled();
     let pix_um = pixel_size_um(params.camera.film_format_mm, log_raw.width, log_raw.height);
     // f64 chain for Python parity — curves are f64 in the profile JSON.
     let log_exposure_f64 = film.log_exposure_f64();
@@ -416,12 +428,15 @@ pub fn develop(
     // Filming.develop uses NORMALIZED curves (Python `develop` subtracts nanmin).
     let norm_curves_f64 =
         spektrafilm_model::density_curves::normalize_density_curves_f64(&density_curves_f64);
+    let t = Instant::now();
     let mut density_cmy =
         backend.density_curve_interp(log_raw, &log_exposure_f64, &norm_curves_f64, gamma as f64);
+    print_stage_timing(stage_timings, "filming_develop.density_interp", t);
 
     // DIR couplers
     let dir = &params.film_render.dir_couplers;
     if dir.active {
+        let t = Instant::now();
         let matrix = spektrafilm_model::couplers::compute_dir_couplers_matrix(
             dir.gamma_samelayer_rgb,
             dir.gamma_interlayer_r_to_gb,
@@ -445,11 +460,13 @@ pub fn develop(
             gamma,
             backend,
         );
+        print_stage_timing(stage_timings, "filming_develop.dir_couplers", t);
     }
 
     // Grain
     let grain = &params.film_render.grain;
     if grain.active {
+        let t = Instant::now();
         // Use f64 throughout — Python reads these from JSON as f64; the
         // f32 storage in `GrainParams` would otherwise truncate to ~7
         // decimals and shift every Poisson lambda by ~5e-8, producing a
@@ -471,6 +488,7 @@ pub fn develop(
             grain.monochrome,
             backend,
         );
+        print_stage_timing(stage_timings, "filming_develop.grain", t);
     }
 
     density_cmy
@@ -484,7 +502,8 @@ pub fn process(
     backend: &dyn ComputeBackend,
     tc_lut: Option<&TcLut>,
 ) -> ImageBuf {
-    let log_raw = expose(image, film, params, backend, tc_lut, None, 1.0);
+    let ref_illuminant = select_illuminant(&film.info.reference_illuminant);
+    let log_raw = expose(image, film, params, backend, tc_lut, None, ref_illuminant, 1.0);
     develop(&log_raw, film, params, backend)
 }
 
@@ -498,7 +517,7 @@ pub fn input_colorspace_to_xyz(name: &str) -> [[f32; 3]; 3] {
     }
 }
 
-fn select_illuminant(name: &str) -> &'static [f32] {
+pub(crate) fn select_illuminant(name: &str) -> &'static [f32] {
     match name {
         "D50" => &spectral::ILLUMINANT_D50,
         "D55" => &spectral::ILLUMINANT_D55,

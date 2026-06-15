@@ -212,12 +212,80 @@ mod integration_tests {
         assert!(mean > from_f64(0.01), "film scan near-black: mean={mean}");
         assert!(mean < from_f64(0.99), "film scan near-white: mean={mean}");
     }
+
+    #[test]
+    fn positive_slide_film_scan_stays_photographic() {
+        let dir = data_dir();
+        let film = profile::load_profile_by_name(&dir, "kodak_ektachrome_100").unwrap();
+        let print = film.clone();
+
+        let mut params = RuntimeParams::default();
+        params.io.scan_film = true;
+        params.camera.auto_exposure = false;
+
+        let backend = spektrafilm_gpu::cpu_backend::CpuBackend;
+        let mut data = Vec::with_capacity(64 * 64 * 3);
+        for y in 0..64 {
+            for x in 0..64 {
+                data.push(from_f64(x as f64 / 63.0));
+                data.push(from_f64(y as f64 / 63.0));
+                data.push(from_f64(((x + y) as f64 / 126.0).powf(1.2)));
+            }
+        }
+        let img = ImageBuf::from_data(64, 64, data);
+
+        let pipeline = Pipeline::new_with_spectral(film, print, params.clone(), &dir)
+            .unwrap()
+            .with_params(params);
+        assert_eq!(
+            pipeline
+                .params
+                .film_render
+                .dir_couplers
+                .gamma_samelayer_rgb,
+            [0.12, 0.08, 0.06],
+            "GUI-style with_params must preserve positive-film DIR parameters"
+        );
+        let result = pipeline.process(img, &backend);
+        let mut clipped_low = 0usize;
+        let mut clipped_high = 0usize;
+        for c in 0..3 {
+            let values = result.data.iter().skip(c).step_by(3);
+            let (mut min, mut max, mut sum) = (Scalar::INFINITY, Scalar::NEG_INFINITY, 0.0);
+            let mut n = 0usize;
+            for &v in values {
+                min = min.min(v);
+                max = max.max(v);
+                sum += v;
+                if v <= from_f64(0.0) {
+                    clipped_low += 1;
+                }
+                if v >= from_f64(1.0) {
+                    clipped_high += 1;
+                }
+                n += 1;
+            }
+            let mean = sum / n as Scalar;
+            assert!(
+                mean > from_f64(0.2) && mean < from_f64(0.8),
+                "slide scan channel {c} mean is implausible: {mean} (min={min}, max={max})"
+            );
+        }
+        let total = result.data.len();
+        assert!(
+            clipped_low < total / 20,
+            "slide scan has too many black-clipped samples: {clipped_low}/{total}"
+        );
+        assert!(
+            clipped_high < total / 20,
+            "slide scan has too many white-clipped samples: {clipped_high}/{total}"
+        );
+    }
 }
 
 #[cfg(test)]
 mod debug_tests {
     use crate::params::RuntimeParams;
-    use crate::pipeline::Pipeline;
     use crate::profile;
     use crate::stages;
     use spektrafilm_math::image::ImageBuf;
@@ -247,7 +315,9 @@ mod debug_tests {
         let img = ImageBuf::from_data(1, 1, vec![gray, gray, gray]);
         eprintln!("Input: {:?}", img.get(0, 0));
 
-        let log_raw = stages::filming::expose(&img, &film, &params, &backend, None, None, 1.0);
+        let ref_illuminant = stages::filming::select_illuminant(&film.info.reference_illuminant);
+        let log_raw =
+            stages::filming::expose(&img, &film, &params, &backend, None, None, ref_illuminant, 1.0);
         eprintln!("log_raw: {:?}", log_raw.get(0, 0));
 
         let density_cmy = stages::filming::develop(&log_raw, &film, &params, &backend);

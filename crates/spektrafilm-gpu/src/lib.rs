@@ -1,4 +1,6 @@
 pub mod cpu_backend;
+#[cfg(feature = "cuda-backend")]
+pub mod cuda_backend;
 #[cfg(feature = "wgpu-backend")]
 pub mod wgpu_backend;
 
@@ -132,6 +134,14 @@ pub trait ComputeBackend: Send + Sync {
         None
     }
 
+    /// True when `try_run_film_chain` returns the same post-scan output that
+    /// `Pipeline::apply_post_scan` would produce (final clamp and optional
+    /// sRGB encoding). Backends default to returning linear RGB and letting
+    /// the pipeline apply the final CPU pass.
+    fn resident_chain_applies_post_scan(&self) -> bool {
+        false
+    }
+
     /// True for f32 GPU backends where effects may trade exactness for
     /// speed (the diffusion filter uses a downsampled sum-of-Gaussians
     /// instead of the exact FFT convolution). CPU keeps the exact path.
@@ -205,11 +215,30 @@ pub struct FilmChainParams<'a> {
     /// before readback). Blur σ in pixels + amount scalar; both come
     /// from `scanner.unsharp_mask`.
     pub unsharp: Option<UnsharpGpuParams>,
+    /// Optional camera lens Gaussian blur on the raw film exposure buffer,
+    /// after camera diffusion and before halation.
+    pub camera_lens_blur_px: Option<f32>,
+    /// Optional scanner lens Gaussian blur on the final RGB buffer, after
+    /// glare/gamut compression and before unsharp.
+    pub scanner_lens_blur_px: Option<f32>,
+    /// Optional highlight reconstruction on the raw film exposure buffer,
+    /// immediately after the front pass and before optical scatter.
+    pub highlight_boost: Option<HighlightBoostGpuParams>,
     /// Optional camera lens diffusion filter — applied on the raw film
     /// exposure buffer right after hanatos2025, before halation (matching
     /// the CPU filming order). A downsampled sum-of-Gaussians; see
     /// `DiffusionGpuPlan`.
     pub diffusion: Option<DiffusionGpuPlan>,
+    /// Optional enlarger diffusion filter. Applied in the print stage on
+    /// linear print raw between print_spectral and print density curves.
+    pub enlarger_diffusion: Option<DiffusionGpuPlan>,
+    /// The print_exposure × B&W printing correction scalar. Used by CUDA
+    /// when `enlarger_diffusion` is active so it can preserve the CPU
+    /// print-stage ordering around preflash.
+    pub print_exposure_scale: f64,
+    /// Whether the final output should be sRGB-encoded after clamping. Mirrors
+    /// `RuntimeParams::io.output_cctf_encoding`.
+    pub output_cctf_encoding: bool,
 }
 
 /// RGB → film-raw front pass of the GPU-resident chain. Both variants are
@@ -242,6 +271,13 @@ pub struct DiffusionGpuPlan {
     pub p_s: f32,
     pub sigmas: Vec<f32>,
     pub coeffs: Vec<[f32; 3]>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct HighlightBoostGpuParams {
+    pub boost_ev: f32,
+    pub boost_range: f32,
+    pub protect_ev: f32,
 }
 
 /// DIR couplers parameters for the GPU-resident matmul + diffusion + final
@@ -363,18 +399,43 @@ pub struct Lut3D {
 
 /// Select the best available backend at runtime.
 ///
-/// Honors `SPEKTRAFILM_BACKEND=cpu` to force the CPU backend even when wgpu is compiled in.
+/// Honors `SPEKTRAFILM_BACKEND=cpu|cuda|wgpu` when the requested backend is compiled in.
 /// Useful for benchmarking and for f64 mode where the GPU shaders truncate to f32.
 pub fn select_backend() -> Box<dyn ComputeBackend> {
-    let force_cpu = std::env::var("SPEKTRAFILM_BACKEND")
-        .map(|v| v.eq_ignore_ascii_case("cpu"))
-        .unwrap_or(false);
+    let requested = std::env::var("SPEKTRAFILM_BACKEND")
+        .ok()
+        .map(|v| v.to_ascii_lowercase());
+
+    if requested.as_deref() == Some("cpu") {
+        tracing::info!("using CPU backend");
+        return Box::new(cpu_backend::CpuBackend);
+    }
+
+    #[cfg(feature = "cuda-backend")]
+    {
+        if requested.as_deref() == Some("cuda") {
+            if let Some(cuda) = cuda_backend::CudaBackend::new() {
+                tracing::info!("using CUDA GPU backend");
+                return Box::new(cuda);
+            }
+            tracing::warn!("CUDA backend requested but unavailable; falling back");
+        }
+    }
+
+    #[cfg(not(feature = "cuda-backend"))]
+    if requested.as_deref() == Some("cuda") {
+        tracing::warn!("CUDA backend requested but spektrafilm-gpu was built without cuda-backend");
+    }
+
     #[cfg(feature = "wgpu-backend")]
     {
-        if !force_cpu {
+        if requested.as_deref().is_none() || requested.as_deref() == Some("wgpu") {
             if let Some(gpu) = wgpu_backend::WgpuBackend::new() {
                 tracing::info!("using wgpu GPU backend");
                 return Box::new(gpu);
+            }
+            if requested.as_deref() == Some("wgpu") {
+                tracing::warn!("wgpu backend requested but unavailable; falling back");
             }
         }
     }

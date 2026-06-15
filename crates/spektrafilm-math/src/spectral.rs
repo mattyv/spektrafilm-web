@@ -973,26 +973,77 @@ pub fn hanatos2025_rgb_to_raw(
     ref_illuminant: &[f32],
     cat16: bool,
 ) -> ImageBuf {
+    let rgb_to_xyz = colorspace_to_xyz_f64(color_space);
+    let src_white = colorspace_white_xyz_f64(color_space);
+    let dst_white = illuminant_xyz_f64(ref_illuminant);
+    let adapt = if cat16 {
+        colorspace::chromatic_adaptation_matrix_cat16_f64(src_white, dst_white)
+    } else {
+        colorspace::chromatic_adaptation_matrix_f64(src_white, dst_white)
+    };
+    hanatos2025_rgb_to_raw_prepared(image, tc_lut, &rgb_to_xyz, &adapt)
+}
+
+/// Apply the Hanatos2025 TC LUT with precomputed colour matrices.
+///
+/// This keeps the CPU parity order of `rgb_to_tc_b`: RGB→XYZ first, then
+/// chromatic adaptation as a second 3×3 multiply. The matrices are simply
+/// prepared once per image instead of rebuilt for every pixel.
+pub fn hanatos2025_rgb_to_raw_prepared(
+    image: &ImageBuf,
+    tc_lut: &TcLut,
+    rgb_to_xyz: &[[f64; 3]; 3],
+    adapt: &[[f64; 3]; 3],
+) -> ImageBuf {
+    use rayon::prelude::*;
     let size = tc_lut.size;
     let channels = tc_lut.channels;
     assert_eq!(channels, 3);
 
     let mut output = ImageBuf::new(image.width, image.height);
 
-    for (i, px) in image.pixels().enumerate() {
-        let rgb = [px[0], px[1], px[2]];
-        let (tc, b) = rgb_to_tc_b(rgb, color_space, ref_illuminant, cat16);
+    output
+        .data
+        .par_chunks_exact_mut(3)
+        .zip(image.data.par_chunks_exact(3))
+        .for_each(|(out, px)| {
+            let r = px[0] as f64;
+            let g = px[1] as f64;
+            let b_in = px[2] as f64;
+            let xyz_native = [
+                rgb_to_xyz[0][0] * r + rgb_to_xyz[0][1] * g + rgb_to_xyz[0][2] * b_in,
+                rgb_to_xyz[1][0] * r + rgb_to_xyz[1][1] * g + rgb_to_xyz[1][2] * b_in,
+                rgb_to_xyz[2][0] * r + rgb_to_xyz[2][1] * g + rgb_to_xyz[2][2] * b_in,
+            ];
+            let xyz = [
+                adapt[0][0] * xyz_native[0]
+                    + adapt[0][1] * xyz_native[1]
+                    + adapt[0][2] * xyz_native[2],
+                adapt[1][0] * xyz_native[0]
+                    + adapt[1][1] * xyz_native[1]
+                    + adapt[1][2] * xyz_native[2],
+                adapt[2][0] * xyz_native[0]
+                    + adapt[2][1] * xyz_native[1]
+                    + adapt[2][2] * xyz_native[2],
+            ];
+            let brightness = xyz[0] + xyz[1] + xyz[2];
+            if brightness <= 1e-10 {
+                out[0] = crate::precision::from_f64(0.0);
+                out[1] = crate::precision::from_f64(0.0);
+                out[2] = crate::precision::from_f64(0.0);
+                return;
+            }
+            let tc = xy_to_tc(xyz[0] / brightness, xyz[1] / brightness);
 
-        let lut_x = tc.0 * (size - 1) as f64;
-        let lut_y = tc.1 * (size - 1) as f64;
+            let lut_x = tc.0 * (size - 1) as f64;
+            let lut_y = tc.1 * (size - 1) as f64;
 
-        let interp = lut::bicubic_2d_f64(&tc_lut.data, size, size, channels, lut_x, lut_y);
+            let interp = lut::bicubic_2d_f64(&tc_lut.data, size, size, channels, lut_x, lut_y);
 
-        let base = i * 3;
-        for c in 0..3 {
-            output.data[base + c] = crate::precision::from_f64(interp[c] * b);
-        }
-    }
+            out[0] = crate::precision::from_f64(interp[0] * brightness);
+            out[1] = crate::precision::from_f64(interp[1] * brightness);
+            out[2] = crate::precision::from_f64(interp[2] * brightness);
+        });
 
     output
 }

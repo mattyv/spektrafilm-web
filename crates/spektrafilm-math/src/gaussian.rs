@@ -68,13 +68,13 @@ pub fn gaussian_blur(img: &ImageBuf, sigma: f32) -> ImageBuf {
     // Process each channel separately for cache-friendly access
     let mut channels: Vec<Vec<Scalar>> = (0..3).map(|c| img.extract_channel(c)).collect();
 
-    for chan in &mut channels {
+    channels.par_iter_mut().for_each(|chan| {
         // Horizontal pass
         let mut tmp = vec![ZERO; w * h];
         blur_1d_parallel(chan, &mut tmp, w, h, sigma_s, true);
         // Vertical pass
         blur_1d_parallel(&tmp, chan, w, h, sigma_s, false);
-    }
+    });
 
     let mut out = ImageBuf::new(img.width, img.height);
     for c in 0..3 {
@@ -139,26 +139,20 @@ fn fir_blur_1d(
                 }
             });
     } else {
-        // Vertical pass: process each column sequentially (column access is strided).
-        // We extract each column, blur it, and write it back.
-        // Parallelism is at the channel level (caller processes 3 channels).
-        for x in 0..w {
-            let col: Vec<Scalar> = (0..h).map(|y| src[y * w + x]).collect();
-            let mut col_dst = vec![ZERO; h];
-            for y in 0..h {
-                let mut sum = ZERO;
-                for (ki, &kv) in kernel.iter().enumerate() {
-                    let sy = (y as isize + ki as isize - radius as isize)
-                        .max(0)
-                        .min(h as isize - 1) as usize;
-                    sum += col[sy] * kv;
+        dst.par_chunks_exact_mut(w)
+            .enumerate()
+            .for_each(|(y, row_dst)| {
+                for x in 0..w {
+                    let mut sum = ZERO;
+                    for (ki, &kv) in kernel.iter().enumerate() {
+                        let sy = (y as isize + ki as isize - radius as isize)
+                            .max(0)
+                            .min(h as isize - 1) as usize;
+                        sum += src[sy * w + x] * kv;
+                    }
+                    row_dst[x] = sum;
                 }
-                col_dst[y] = sum;
-            }
-            for y in 0..h {
-                dst[y * w + x] = col_dst[y];
-            }
-        }
+            });
     }
 }
 
@@ -199,15 +193,24 @@ fn iir_blur_1d(
                 iir_filter_row(row_src, row_dst, a, b1, b2, b3);
             });
     } else {
-        // Vertical pass: extract columns, filter, write back.
-        for x in 0..w {
-            let col_src: Vec<Scalar> = (0..h).map(|y| src[y * w + x]).collect();
-            let mut col_dst = vec![ZERO; h];
-            iir_filter_row(&col_src, &mut col_dst, a, b1, b2, b3);
-            for y in 0..h {
-                dst[y * w + x] = col_dst[y];
-            }
-        }
+        // Vertical recursive filtering has a true dependency down each column,
+        // so columns are independent work items. Store them column-major first
+        // to keep parallel writes contiguous, then transpose back to row-major.
+        let mut col_major = vec![ZERO; w * h];
+        col_major
+            .par_chunks_exact_mut(h)
+            .enumerate()
+            .for_each(|(x, col_dst)| {
+                let col_src: Vec<Scalar> = (0..h).map(|y| src[y * w + x]).collect();
+                iir_filter_row(&col_src, col_dst, a, b1, b2, b3);
+            });
+        dst.par_chunks_exact_mut(w)
+            .enumerate()
+            .for_each(|(y, row_dst)| {
+                for x in 0..w {
+                    row_dst[x] = col_major[x * h + y];
+                }
+            });
     }
 }
 

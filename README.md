@@ -29,6 +29,9 @@ cargo build --release -p spektrafilm-gui
 # f32 CLI — fast batch processor, defaults to GPU backend
 cargo build --release -p spektrafilm-cli
 
+# f32 CLI with experimental native CUDA backend option
+cargo build --release -p spektrafilm-cli --features spektrafilm-gpu/cuda-backend
+
 # f64 CLI — reference precision (CPU only; WGSL has no f64)
 cargo build --release --features precision-f64 -p spektrafilm-cli
 cp target/release/spektrafilm target/release/spektrafilm-f64
@@ -39,7 +42,9 @@ cargo build --release -p spektrafilm-cli --bin decode_raw_gui
 
 The GUI auto-detects the f64 binary via `$SPEKTRAFILM_F64_CLI`, then `spektrafilm-f64` on `PATH`, then next to its own executable, then `target/release/spektrafilm-f64`.
 
-Currently only on MacOS, windows compability was tested at early stages, so something might not work.
+Windows builds use the WGSL/wgpu backend by default. The CPU fallback path avoids requiring a system OpenBLAS install on Windows, while macOS and Unix-like targets still use native BLAS providers.
+
+WGSL is the default GPU backend and can be selected explicitly with `SPEKTRAFILM_BACKEND=wgpu`. An experimental native CUDA backend can be built with `--features spektrafilm-gpu/cuda-backend` and selected with `SPEKTRAFILM_BACKEND=cuda`. It uses CUDA 12 driver/NVRTC bindings through dynamic loading, so the NVIDIA driver and NVRTC runtime DLLs must be available. Set `SPEKTRAFILM_CUDA_DEVICE=1` (or another zero-based index) to pick a non-default CUDA device. Both GPU paths have a resident preview implementation: front pass, highlight boost, camera diffusion, camera lens blur, halation, DIR couplers, grain, density curves, enlarger diffusion, print/scan spectral reductions, glare, output gamut compression, scanner lens blur, unsharp, and one readback.
 
 ## Usage
 
@@ -61,6 +66,11 @@ Currently only on MacOS, windows compability was tested at early stages, so some
 ```bash
 # f32 GPU (fast)
 ./target/release/spektrafilm process input.ORF -o out.png \
+    --film kodak_gold_200 --paper kodak_portra_endura --data-dir data
+
+# f32 native CUDA, when built with spektrafilm-gpu/cuda-backend
+SPEKTRAFILM_BACKEND=cuda \
+    ./target/release/spektrafilm process input.ORF -o out.png \
     --film kodak_gold_200 --paper kodak_portra_endura --data-dir data
 
 # f64 CPU (reference)

@@ -6,6 +6,7 @@
 ///   3. Compute print exposure normalization factor from midgray spectral density
 ///   4. Pass all calibration data to the pipeline stages
 use std::path::Path;
+use std::time::Instant;
 
 use spektrafilm_gpu::ComputeBackend;
 use spektrafilm_math::image::ImageBuf;
@@ -35,12 +36,64 @@ fn dump_if_env(var: &str, image: &ImageBuf) {
     }
 }
 
+fn stage_timings_enabled() -> bool {
+    std::env::var_os("SPEKTRAFILM_STAGE_TIMINGS").is_some()
+}
+
+fn print_stage_timing(enabled: bool, stage: &str, start: Instant) {
+    if enabled {
+        eprintln!("stage {stage}: {} ms", start.elapsed().as_millis());
+    }
+}
+
 use crate::enlarger;
 use crate::params::RuntimeParams;
 use crate::profile::Profile;
 use crate::spectral_service;
 use crate::stages;
 
+fn apply_film_specific_params(film: &Profile, params: &mut RuntimeParams) {
+    if film.is_positive() {
+        params.film_render.dir_couplers.gamma_samelayer_rgb = [0.12, 0.08, 0.06];
+        params.film_render.dir_couplers.gamma_interlayer_r_to_gb = [0.12, 0.06];
+        params.film_render.dir_couplers.gamma_interlayer_g_to_rb = [0.08, 0.06];
+        params.film_render.dir_couplers.gamma_interlayer_b_to_rg = [0.06, 0.06];
+    } else if film.is_negative() {
+        params.film_render.dir_couplers.gamma_samelayer_rgb = [0.336, 0.319, 0.273];
+        params.film_render.dir_couplers.gamma_interlayer_r_to_gb = [0.353, 0.302];
+        params.film_render.dir_couplers.gamma_interlayer_g_to_rb = [0.154, 0.353];
+        params.film_render.dir_couplers.gamma_interlayer_b_to_rg = [0.168, 0.226];
+    }
+
+    // Monochrome grain is derived from the film, never user-set — clear it
+    // for colour so a stray params file can't correlate the colour channels'
+    // noise.
+    params.film_render.grain.monochrome = film.is_bw();
+    if film.is_bw() {
+        // Upstream n_channels==1 semantics (`match_channels` keeps channel 0
+        // of every per-channel tuple; the DIR matrix is 1×1 self-inhibition
+        // with no interlayer terms). Forcing the arrays to channel-0 keeps the
+        // broadcast 3-channel engine numerically identical to the upstream
+        // single-channel run.
+        let dir = &mut params.film_render.dir_couplers;
+        dir.gamma_samelayer_rgb = [dir.gamma_samelayer_rgb[0]; 3];
+        dir.gamma_interlayer_r_to_gb = [0.0, 0.0];
+        dir.gamma_interlayer_g_to_rb = [0.0, 0.0];
+        dir.gamma_interlayer_b_to_rg = [0.0, 0.0];
+        let g = &mut params.film_render.grain;
+        g.agx_particle_scale = [g.agx_particle_scale[0]; 3];
+        g.density_min = [g.density_min[0]; 3];
+        g.uniformity = [g.uniformity[0]; 3];
+        let h = &mut params.film_render.halation;
+        h.halation_strength = [h.halation_strength[0]; 3];
+        h.scatter_core_um = [h.scatter_core_um[0]; 3];
+        h.scatter_tail_um = [h.scatter_tail_um[0]; 3];
+        h.scatter_tail_weight = [h.scatter_tail_weight[0]; 3];
+        h.halation_first_sigma_um = [h.halation_first_sigma_um[0]; 3];
+    }
+}
+
+#[derive(Clone)]
 pub struct Pipeline {
     pub film: Profile,
     pub print: Profile,
@@ -50,6 +103,10 @@ pub struct Pipeline {
     /// upsampler is selected instead of the hanatos2025 tc LUT. Mutually
     /// exclusive with `tc_lut`.
     mallett_core: Option<[[f64; 3]; 3]>,
+    /// Illuminant used by the RGB→tc projection before TC LUT lookup.
+    /// Most methods use the film reference illuminant; arctic2026alpha02
+    /// recovers reflectance in D65 coordinates and relights separately.
+    front_illuminant: String,
     /// Print exposure normalization factor (1/geomean of midgray raw through enlarger).
     print_exposure_factor: f64,
     /// Filtered enlarger illuminant for printing stage (f64 for Python parity).
@@ -78,6 +135,20 @@ impl Pipeline {
     pub fn preflash_raw(&self) -> [f64; 3] {
         self.preflash_raw
     }
+
+    /// Return a copy of this calibrated pipeline with updated runtime params.
+    /// Callers must only use this when the calibration-affecting inputs match
+    /// the pipeline that was originally built.
+    pub fn with_params(mut self, params: RuntimeParams) -> Self {
+        let mut params = params;
+        apply_film_specific_params(&self.film, &mut params);
+        self.output_gamut = crate::gamut_compression::OutputGamutCompress::build(
+            &params.io.output_gamut_compress,
+            &params.io.output_color_space,
+        );
+        self.params = params;
+        self
+    }
 }
 
 impl Pipeline {
@@ -98,12 +169,14 @@ impl Pipeline {
             &params.io.output_gamut_compress,
             &params.io.output_color_space,
         );
+        let front_illuminant = film.info.reference_illuminant.clone();
         Self {
             film,
             print,
             params,
             tc_lut: None,
             mallett_core: None,
+            front_illuminant,
             print_exposure_factor: 1.0,
             print_illuminant,
             preflash_raw: [0.0; 3],
@@ -130,44 +203,7 @@ impl Pipeline {
         // so a fresh `RuntimeParams::default()` does NOT match what
         // Python uses. The DIR-coupler gammas in particular differ
         // between positive and negative films.
-        if film.is_positive() {
-            params.film_render.dir_couplers.gamma_samelayer_rgb = [0.12, 0.08, 0.06];
-            params.film_render.dir_couplers.gamma_interlayer_r_to_gb = [0.12, 0.06];
-            params.film_render.dir_couplers.gamma_interlayer_g_to_rb = [0.08, 0.06];
-            params.film_render.dir_couplers.gamma_interlayer_b_to_rg = [0.06, 0.06];
-        } else if film.is_negative() {
-            params.film_render.dir_couplers.gamma_samelayer_rgb = [0.336, 0.319, 0.273];
-            params.film_render.dir_couplers.gamma_interlayer_r_to_gb = [0.353, 0.302];
-            params.film_render.dir_couplers.gamma_interlayer_g_to_rb = [0.154, 0.353];
-            params.film_render.dir_couplers.gamma_interlayer_b_to_rg = [0.168, 0.226];
-        }
-        // Monochrome grain is derived from the film, never user-set —
-        // clear it for colour so a stray params file can't correlate the
-        // colour channels' noise.
-        params.film_render.grain.monochrome = film.is_bw();
-        if film.is_bw() {
-            // Upstream n_channels==1 semantics (`match_channels` keeps
-            // channel 0 of every per-channel tuple; the DIR matrix is 1×1
-            // self-inhibition with no interlayer terms). Forcing the arrays
-            // to channel-0 keeps the broadcast 3-channel engine — including
-            // the GPU halation path, which averages across channels —
-            // numerically identical to the upstream single-channel run.
-            let dir = &mut params.film_render.dir_couplers;
-            dir.gamma_samelayer_rgb = [dir.gamma_samelayer_rgb[0]; 3];
-            dir.gamma_interlayer_r_to_gb = [0.0, 0.0];
-            dir.gamma_interlayer_g_to_rb = [0.0, 0.0];
-            dir.gamma_interlayer_b_to_rg = [0.0, 0.0];
-            let g = &mut params.film_render.grain;
-            g.agx_particle_scale = [g.agx_particle_scale[0]; 3];
-            g.density_min = [g.density_min[0]; 3];
-            g.uniformity = [g.uniformity[0]; 3];
-            let h = &mut params.film_render.halation;
-            h.halation_strength = [h.halation_strength[0]; 3];
-            h.scatter_core_um = [h.scatter_core_um[0]; 3];
-            h.scatter_tail_um = [h.scatter_tail_um[0]; 3];
-            h.scatter_tail_weight = [h.scatter_tail_weight[0]; 3];
-            h.halation_first_sigma_um = [h.halation_first_sigma_um[0]; 3];
-        }
+        apply_film_specific_params(&film, &mut params);
 
         // Python parity: look up per-(print, illuminant, film) neutral filter values from
         // the JSON database — matches `apply_database_neutral_print_filters`. Defaults to
@@ -210,6 +246,7 @@ impl Pipeline {
 
         let ref_illuminant = select_illuminant(&film.info.reference_illuminant);
         let ref_illuminant_f64 = select_illuminant_f64(&film.info.reference_illuminant);
+        let mut front_illuminant = film.info.reference_illuminant.clone();
 
         // RGB → film raw upsampler. Default `hanatos2025` builds the spectral tc
         // LUT; `mallett2019` builds a 3×3 reflectance-basis matrix instead (no
@@ -248,6 +285,28 @@ impl Pipeline {
                     };
                     (Some(tc_lut), None)
                 }
+                "arctic2026alpha02" => {
+                    front_illuminant = "D65".into();
+                    let reflectance_lut = spectral_service::load_arctic2026alpha02_lut(data_dir)?;
+                    let tc_lut = spectral_service::compute_reflectance_tc_lut(
+                        &reflectance_lut,
+                        &sensitivity,
+                        ref_illuminant_f64,
+                    );
+                    let input_gamut = crate::input_gamut::InputGamutCompress::build(
+                        &params.io.input_gamut_compress.algorithm,
+                        params.io.input_gamut_compress.knee,
+                    )?;
+                    let tc_lut = if input_gamut.is_active() {
+                        let (rx, ry) = spektrafilm_math::spectral::illuminant_to_xy(
+                            select_illuminant(&front_illuminant),
+                        );
+                        input_gamut.remap(&tc_lut, [rx, ry])
+                    } else {
+                        tc_lut
+                    };
+                    (Some(tc_lut), None)
+                }
                 "mallett2019" => (
                     None,
                     Some(crate::mallett::compute_core_matrix(
@@ -278,7 +337,12 @@ impl Pipeline {
         // is active. `scale` folds the EV compensation for the `_comp` branch.
         let midgray_raw = |scale: f64| -> [f64; 3] {
             if let Some(lut) = &tc_lut {
-                enlarger::midgray_raw_hanatos(lut, ref_illuminant, params.settings.use_cat16, scale)
+                enlarger::midgray_raw_hanatos(
+                    lut,
+                    select_illuminant(&front_illuminant),
+                    params.settings.use_cat16,
+                    scale,
+                )
             } else {
                 let core = mallett_core
                     .as_ref()
@@ -387,6 +451,7 @@ impl Pipeline {
             params,
             tc_lut,
             mallett_core,
+            front_illuminant,
             print_exposure_factor,
             print_illuminant,
             preflash_raw,
@@ -395,17 +460,21 @@ impl Pipeline {
     }
 
     pub fn process(&self, image: ImageBuf, backend: &dyn ComputeBackend) -> ImageBuf {
+        let stage_timings = stage_timings_enabled();
         // Working-resolution rescale (io.upscale_factor) — mirrors Python's
         // ResizingService.crop_and_rescale. Done first so the whole pipeline
         // (and the diffusion-filter kernel size, which scales with the image)
         // runs at the chosen resolution. pixel_size_um is derived per-stage
         // from the image dims, so it follows automatically.
+        let t = Instant::now();
         let image = self.rescale_working(image);
+        print_stage_timing(stage_timings, "rescale", t);
         tracing::info!(backend = backend.name(), "pipeline: start");
 
         // Scanner B&W/slide exposure correction (no-op unless scanner
         // white/black correction is on for a slide or print scan). Computed
         // up front so both the GPU-resident and per-stage paths share it.
+        let t = Instant::now();
         let color_ref = crate::color_reference::ColorReference::compute(
             &self.film,
             &self.print,
@@ -413,28 +482,25 @@ impl Pipeline {
             &self.print_illuminant,
             self.print_exposure_factor,
         );
+        print_stage_timing(stage_timings, "color_reference", t);
 
         // GPU fast path: dispatch the whole filming→printing→scanning chain
         // (or filming→scanning when scan_film) as a single GPU command
-        // buffer — one upload + one readback total. Halation, DIR couplers,
-        // grain, glare, output gamut compression, the camera diffusion
-        // filter, and the scanner white/black correction all run
-        // in-resident, with either upsampler (hanatos TC LUT or the mallett
-        // matrix) as the front pass. Lens blur, scanner lens blur, highlight
-        // boost, and the enlarger diffusion filter still force the slower
-        // per-stage path.
-        if (self.tc_lut.is_some() || self.mallett_core.is_some())
-            && self.params.camera.lens_blur_um == 0.0
-            && self.params.scanner.lens_blur == 0.0
-            && !self.params.enlarger.diffusion_filter.active
-            && self.params.film_render.halation.boost_ev == 0.0
-        {
+        // buffer — one upload + one readback total. CUDA and WGSL run the
+        // extended resident chain, including camera/scanner lens blur,
+        // highlight boost, and enlarger diffusion. Backends that do not
+        // implement the resident chain return `None` and fall through.
+        if self.tc_lut.is_some() || self.mallett_core.is_some() {
             if let Some(out) = self.try_gpu_resident(&image, backend, &color_ref) {
                 tracing::info!("pipeline: gpu-resident fast path complete");
+                if backend.resident_chain_applies_post_scan() {
+                    return out;
+                }
                 return self.apply_post_scan(out);
             }
         }
 
+        let t = Instant::now();
         let log_raw = stages::filming::expose(
             &image,
             &self.film,
@@ -442,14 +508,19 @@ impl Pipeline {
             backend,
             self.tc_lut.as_ref(),
             self.mallett_core.as_ref(),
+            select_illuminant(&self.front_illuminant),
             color_ref.filming_exposure_correction,
         );
+        print_stage_timing(stage_timings, "filming_expose", t);
         dump_if_env("SPEKTRAFILM_DUMP_FILM_LOG_RAW", &log_raw);
+        let t = Instant::now();
         let filmed = stages::filming::develop(&log_raw, &self.film, &self.params, backend);
+        print_stage_timing(stage_timings, "filming_develop", t);
         tracing::info!("pipeline: filming complete");
         dump_if_env("SPEKTRAFILM_DUMP_FILM_DENSITY", &filmed);
 
         if self.params.io.scan_film {
+            let t = Instant::now();
             let result = stages::scanning::process(
                 &filmed,
                 &self.film,
@@ -458,9 +529,11 @@ impl Pipeline {
                 &color_ref,
                 &self.output_gamut,
             );
+            print_stage_timing(stage_timings, "scanning", t);
             tracing::info!("pipeline: scanning complete (film scan)");
             result
         } else {
+            let t = Instant::now();
             let printed = stages::printing::process_with_calibration(
                 &filmed,
                 &self.film,
@@ -472,8 +545,10 @@ impl Pipeline {
                 self.preflash_raw,
                 color_ref.printing_exposure_correction,
             );
+            print_stage_timing(stage_timings, "printing", t);
             tracing::info!("pipeline: printing complete");
             dump_if_env("SPEKTRAFILM_DUMP_PRINT_DENSITY", &printed);
+            let t = Instant::now();
             let result = stages::scanning::process(
                 &printed,
                 &self.print,
@@ -482,8 +557,37 @@ impl Pipeline {
                 &color_ref,
                 &self.output_gamut,
             );
+            print_stage_timing(stage_timings, "scanning", t);
             tracing::info!("pipeline: scanning complete");
             result
+        }
+    }
+
+    /// Run only the GPU-resident path from a borrowed image. This is used by
+    /// the live GUI when it has already decided the working resolution, so a
+    /// full-resolution preview does not need to deep-clone the loaded image
+    /// just to satisfy `process(ImageBuf)`.
+    pub fn process_resident_borrowed(
+        &self,
+        image: &ImageBuf,
+        backend: &dyn ComputeBackend,
+    ) -> Option<ImageBuf> {
+        if self.tc_lut.is_none() && self.mallett_core.is_none() {
+            return None;
+        }
+        tracing::info!(backend = backend.name(), "pipeline: borrowed resident start");
+        let color_ref = crate::color_reference::ColorReference::compute(
+            &self.film,
+            &self.print,
+            &self.params,
+            &self.print_illuminant,
+            self.print_exposure_factor,
+        );
+        let out = self.try_gpu_resident(image, backend, &color_ref)?;
+        if backend.resident_chain_applies_post_scan() {
+            Some(out)
+        } else {
+            Some(self.apply_post_scan(out))
         }
     }
 
@@ -568,7 +672,7 @@ impl Pipeline {
         // Front pass: hanatos TC LUT lookup, or the mallett 3×3 matmul
         // (`core · M_cs`, same fold as the CPU `expose` dispatch).
         let front = if let Some(tc_lut) = self.tc_lut.as_ref() {
-            let ref_illuminant = select_illuminant(&self.film.info.reference_illuminant);
+            let ref_illuminant = select_illuminant(&self.front_illuminant);
             let mut rgb_to_adapted = spektrafilm_math::spectral::build_rgb_to_adapted_xyz(
                 &self.params.io.input_color_space,
                 ref_illuminant,
@@ -715,13 +819,19 @@ impl Pipeline {
             }
         }
 
+        let pix_um = stages::filming::pixel_size_um(
+            self.params.camera.film_format_mm,
+            image.width,
+            image.height,
+        );
+
         // print_exposure_factor × print_exposure, with the B&W printing
         // exposure correction folded in (CPU applies it as a further raw
         // multiply; print_spectral applies the whole product as one
         // normalization). 1.0 except on a corrected print scan.
-        let print_norm_factor = self.print_exposure_factor
-            * self.params.enlarger.print_exposure as f64
-            * color_ref.printing_exposure_correction;
+        let print_exposure_scale =
+            self.params.enlarger.print_exposure as f64 * color_ref.printing_exposure_correction;
+        let print_norm_factor = self.print_exposure_factor * print_exposure_scale;
 
         // Halation in the resident chain — only built when the halation
         // stage is active. Mirrors `apply_halation_um`: averages the
@@ -967,14 +1077,32 @@ impl Pipeline {
             None
         };
 
+        let camera_lens_blur_px = if self.params.camera.lens_blur_um > 0.0 {
+            Some(self.params.camera.lens_blur_um / pix_um)
+        } else {
+            None
+        };
+
+        let scanner_lens_blur_px = if self.params.scanner.lens_blur > 0.0 {
+            Some(self.params.scanner.lens_blur)
+        } else {
+            None
+        };
+
+        let hboost = &self.params.film_render.halation;
+        let highlight_boost = if hboost.boost_ev != 0.0 {
+            Some(spektrafilm_gpu::HighlightBoostGpuParams {
+                boost_ev: hboost.boost_ev as f32,
+                boost_range: hboost.boost_range as f32,
+                protect_ev: hboost.protect_ev as f32,
+            })
+        } else {
+            None
+        };
+
         // Camera diffusion filter plan (downsampled sum-of-Gaussians) for the
         // resident chain. `None` when the filter is a no-op.
         let diffusion = if self.params.camera.diffusion_filter.active {
-            let pix_um = crate::stages::filming::pixel_size_um(
-                self.params.camera.film_format_mm,
-                image.width,
-                image.height,
-            );
             spektrafilm_model::diffusion::diffusion_gpu_plan(
                 &self.params.camera.diffusion_filter.to_model(),
                 pix_um as f64,
@@ -984,6 +1112,18 @@ impl Pipeline {
         } else {
             None
         };
+
+        let enlarger_diffusion =
+            if !self.params.io.scan_film && self.params.enlarger.diffusion_filter.active {
+                spektrafilm_model::diffusion::diffusion_gpu_plan(
+                    &self.params.enlarger.diffusion_filter.to_model(),
+                    pix_um as f64,
+                    image.width,
+                    image.height,
+                )
+            } else {
+                None
+            };
 
         let params = spektrafilm_gpu::FilmChainParams {
             image,
@@ -1013,7 +1153,13 @@ impl Pipeline {
             glare,
             gamut: self.output_gamut.gpu_params(),
             unsharp,
+            camera_lens_blur_px,
+            scanner_lens_blur_px,
+            highlight_boost,
             diffusion,
+            enlarger_diffusion,
+            print_exposure_scale,
+            output_cctf_encoding: self.params.io.output_cctf_encoding,
         };
         backend.try_run_film_chain(&params)
     }

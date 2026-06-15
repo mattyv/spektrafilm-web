@@ -22,6 +22,10 @@ use spektrafilm_gpu::ComputeBackend;
 use spektrafilm_math::image::ImageBuf;
 use spektrafilm_math::precision::{Scalar, from_f32, srgb_decode, to_f32};
 
+const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(120);
+const IN_FLIGHT_REPAINT: Duration = Duration::from_millis(16);
+const PREVIEW_TEXTURE_MAX_DIM: usize = 8192;
+
 fn main() -> eframe::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -29,16 +33,16 @@ fn main() -> eframe::Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
         )
         .init();
+    if let Err(err) = embedded_bundle::setup() {
+        eprintln!("[spektrafilm] embedded bundle setup failed: {err:#}");
+    }
     let backend = spektrafilm_gpu::select_backend();
     let backend: Arc<dyn ComputeBackend> = Arc::from(backend);
     let initial_image = std::env::args().nth(1).map(PathBuf::from);
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1400.0, 900.0]),
-        // Force the wgpu renderer (Metal-backed CAMetalLayer on macOS)
-        // instead of glow. We need a CAMetalLayer so we can tag its
-        // colorspace as sRGB — see `tag_metal_layer_srgb` below.
-        renderer: eframe::Renderer::Wgpu,
+        renderer: gui_renderer(),
         // egui's default device descriptor hardcodes
         // `max_texture_dimension_2d: 8192`, so uploading the preview of an
         // image wider or taller than 8192 px (a single texture) panics.
@@ -82,6 +86,94 @@ fn main() -> eframe::Result<()> {
     )
 }
 
+#[cfg(embed_bundle)]
+mod embedded_bundle {
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+
+    use anyhow::{Context, Result};
+
+    include!(env!("SPEKTRAFILM_EMBED_MANIFEST"));
+
+    pub fn setup() -> Result<()> {
+        let root = cache_root().join(BUNDLE_ID);
+        let data_dir = root.join("data");
+        let f64_cli = root.join(f64_cli_name());
+        let marker = root.join(".ready");
+
+        if !marker.is_file() || !data_dir.join("profiles").is_dir() || !f64_cli.is_file() {
+            std::fs::create_dir_all(&data_dir)
+                .with_context(|| format!("creating {}", data_dir.display()))?;
+            for (rel, bytes) in DATA_FILES {
+                write_file(&data_dir.join(rel), bytes)?;
+            }
+            write_file(&f64_cli, F64_EXE)?;
+            write_file(&marker, BUNDLE_ID.as_bytes())?;
+        }
+
+        // This runs before any worker threads are spawned.
+        unsafe {
+            std::env::set_var("SPEKTRAFILM_DATA_DIR", &data_dir);
+            std::env::set_var("SPEKTRAFILM_F64_CLI", &f64_cli);
+        }
+        Ok(())
+    }
+
+    fn cache_root() -> PathBuf {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("spektrafilm")
+            .join("embedded")
+    }
+
+    fn f64_cli_name() -> &'static str {
+        if cfg!(windows) {
+            "spektrafilm-f64.exe"
+        } else {
+            "spektrafilm-f64"
+        }
+    }
+
+    fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let mut file =
+            std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("writing {}", path.display()))?;
+        Ok(())
+    }
+}
+
+#[cfg(not(embed_bundle))]
+mod embedded_bundle {
+    use anyhow::Result;
+
+    pub fn setup() -> Result<()> {
+        Ok(())
+    }
+}
+
+fn gui_renderer() -> eframe::Renderer {
+    match std::env::var("SPEKTRAFILM_GUI_RENDERER") {
+        Ok(v) if v.eq_ignore_ascii_case("wgpu") => eframe::Renderer::Wgpu,
+        Ok(v) if v.eq_ignore_ascii_case("glow") => eframe::Renderer::Glow,
+        _ => {
+            if cfg!(target_os = "macos") {
+                // Metal-backed CAMetalLayer lets us tag the colorspace as sRGB.
+                eframe::Renderer::Wgpu
+            } else {
+                // Keep the UI compositor away from wgpu/D3D12 by default on
+                // Windows/Linux; CUDA/WGSL compute backends are selected separately.
+                eframe::Renderer::Glow
+            }
+        }
+    }
+}
+
 /// One entry in the film / paper combo box. `stock` is the filename
 /// stem (the unique key the profile loader expects); `display` is the
 /// human-readable label from the profile's `info.name`, falling back
@@ -108,13 +200,19 @@ struct App {
     print_dev_times: Vec<f64>,
     params: RuntimeParams,
     image_path: Option<PathBuf>,
-    image: Option<ImageBuf>,
+    image: Option<Arc<ImageBuf>>,
     /// Last rendered pipeline output (post sRGB encode + clip). Retained
     /// so the Save button can write it without re-running the pipeline.
     output_image: Option<ImageBuf>,
     output_tex: Option<egui::TextureHandle>,
+    pipeline_cache_key: Option<String>,
+    pipeline_cache: Option<Pipeline>,
     last_render_ms: f32,
     last_pipeline_build_ms: f32,
+    last_input_clone_ms: f32,
+    last_scale_ms: f32,
+    last_preview_ms: f32,
+    last_worker_total_ms: f32,
     status: String,
     /// Set when any control change should trigger a re-render. The
     /// next `update()` tick dispatches the render onto a worker
@@ -126,6 +224,7 @@ struct App {
     /// `dirty` so the latest state gets a fresh pass instead of
     /// dropping the user's mid-render edits on the floor.
     pending_dirty: bool,
+    dirty_since: Option<Instant>,
     /// Current preview zoom multiplier on top of the fit-to-panel
     /// scale (1.0 = fit). Mouse wheel adjusts it around the cursor,
     /// drag pans, double-click resets.
@@ -161,8 +260,18 @@ struct RenderJob {
 
 struct RenderResult {
     output: ImageBuf,
+    preview: PreviewTextureData,
+    input_clone_ms: f32,
+    scale_ms: f32,
     pipeline_build_ms: f32,
     render_ms: f32,
+    preview_ms: f32,
+    worker_total_ms: f32,
+}
+
+struct PreviewTextureData {
+    size: [usize; 2],
+    rgba: Vec<u8>,
 }
 
 /// One in-flight f64 export. The worker thread owns the child
@@ -225,9 +334,16 @@ impl App {
             image: None,
             output_image: None,
             output_tex: None,
+            pipeline_cache_key: None,
+            pipeline_cache: None,
             last_render_ms: 0.0,
             last_pipeline_build_ms: 0.0,
+            last_input_clone_ms: 0.0,
+            last_scale_ms: 0.0,
+            last_preview_ms: 0.0,
+            last_worker_total_ms: 0.0,
             pending_dirty: false,
+            dirty_since: None,
             zoom: 1.0,
             pan: egui::Vec2::ZERO,
             render_job: None,
@@ -267,7 +383,7 @@ impl App {
                     (img.pixel_count() as f64 / 1e6),
                     t.elapsed().as_secs_f32() * 1000.0
                 );
-                self.image = Some(img);
+                self.image = Some(Arc::new(img));
                 self.image_path = Some(path.to_path_buf());
                 self.dirty = true;
             }
@@ -275,6 +391,36 @@ impl App {
                 self.status = format!("Load error: {e:#}");
             }
         }
+    }
+
+    fn preview_pipeline(
+        &mut self,
+        film_name: &str,
+        print_name: &str,
+        params: &RuntimeParams,
+    ) -> Result<(Pipeline, f32), String> {
+        let t = Instant::now();
+        let key = preview_pipeline_cache_key(film_name, print_name, params);
+        if self.pipeline_cache_key.as_deref() == Some(key.as_str())
+            && let Some(pipeline) = self.pipeline_cache.as_ref()
+        {
+            return Ok((pipeline.clone().with_params(params.clone()), t.elapsed().as_secs_f32() * 1000.0));
+        }
+
+        let film = profile::load_profile_by_name(&self.data_dir, film_name)
+            .map_err(|e| format!("film profile '{film_name}': {e}"))?;
+        let effective_print_name = if params.io.scan_film {
+            film_name
+        } else {
+            print_name
+        };
+        let print = profile::load_profile_by_name(&self.data_dir, effective_print_name)
+            .map_err(|e| format!("print profile '{effective_print_name}': {e}"))?;
+        let pipeline = Pipeline::new_with_spectral(film, print, params.clone(), &self.data_dir)
+            .map_err(|e| format!("pipeline build: {e}"))?;
+        self.pipeline_cache_key = Some(key);
+        self.pipeline_cache = Some(pipeline.clone());
+        Ok((pipeline, t.elapsed().as_secs_f32() * 1000.0))
     }
 
     /// Spawn a render on a worker thread. The UI stays interactive
@@ -287,13 +433,23 @@ impl App {
             self.pending_dirty = true;
             return;
         }
-        let Some(image) = self.image.clone() else {
+        let t_clone = Instant::now();
+        let Some(image) = self.image.as_ref().cloned() else {
             return;
         };
+        let input_clone_ms = t_clone.elapsed().as_secs_f32() * 1000.0;
         let film_name = self.film_name.clone();
         let print_name = self.print_name.clone();
-        let params = self.params.clone();
-        let data_dir = self.data_dir.clone();
+        let mut params = self.params.clone();
+        let (pipeline_template, pipeline_build_ms) =
+            match self.preview_pipeline(&film_name, &print_name, &params) {
+                Ok(p) => p,
+                Err(msg) => {
+                    eprintln!("[spektrafilm] render error: {msg}");
+                    self.status = format!("Render error: {msg}");
+                    return;
+                }
+            };
         let backend = self.backend.clone();
         let (tx, rx) = mpsc::channel();
         let ctx_for_worker = ctx.clone();
@@ -304,21 +460,41 @@ impl App {
                 // message — otherwise the receiver only sees a disconnect
                 // and the user gets a uselessly vague status line.
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let t_build = Instant::now();
-                    let film = profile::load_profile_by_name(&data_dir, &film_name)
-                        .map_err(|e| format!("film profile '{film_name}': {e}"))?;
-                    let print = profile::load_profile_by_name(&data_dir, &print_name)
-                        .map_err(|e| format!("print profile '{print_name}': {e}"))?;
-                    let pipeline = Pipeline::new_with_spectral(film, print, params, &data_dir)
-                        .map_err(|e| format!("pipeline build: {e}"))?;
-                    let pipeline_build_ms = t_build.elapsed().as_secs_f32() * 1000.0;
+                    let t_total = Instant::now();
+                    let working_factor = params.io.upscale_factor;
+                    let t_scale = Instant::now();
+                    let scaled_image = if working_factor <= 0.0 || (working_factor - 1.0).abs() < 1e-6 {
+                        None
+                    } else {
+                        Some(rescale_preview_input_fast(image.clone(), working_factor))
+                    };
+                    let scale_ms = t_scale.elapsed().as_secs_f32() * 1000.0;
+                    params.io.upscale_factor = 1.0;
+                    let pipeline = pipeline_template.with_params(params);
                     let t = Instant::now();
-                    let output = pipeline.process(image, backend.as_ref());
+                    let output = match scaled_image {
+                        Some(image) => pipeline.process(image, backend.as_ref()),
+                        None if pipeline.params.io.scan_film && pipeline.film.is_positive() => {
+                            pipeline.process((*image).clone(), backend.as_ref())
+                        }
+                        None => pipeline
+                            .process_resident_borrowed(image.as_ref(), backend.as_ref())
+                            .unwrap_or_else(|| pipeline.process((*image).clone(), backend.as_ref())),
+                    };
                     let render_ms = t.elapsed().as_secs_f32() * 1000.0;
+                    let t_preview = Instant::now();
+                    let preview = make_preview_texture_data(&output);
+                    let preview_ms = t_preview.elapsed().as_secs_f32() * 1000.0;
+                    let worker_total_ms = t_total.elapsed().as_secs_f32() * 1000.0;
                     Ok(RenderResult {
                         output,
+                        preview,
+                        input_clone_ms,
+                        scale_ms,
                         pipeline_build_ms,
                         render_ms,
+                        preview_ms,
+                        worker_total_ms,
                     })
                 }))
                 .unwrap_or_else(|panic| Err(panic_message(&panic)));
@@ -435,9 +611,19 @@ impl App {
         self.render_job = None;
         match result {
             Ok(r) => {
+                self.last_input_clone_ms = r.input_clone_ms;
+                self.last_scale_ms = r.scale_ms;
                 self.last_pipeline_build_ms = r.pipeline_build_ms;
                 self.last_render_ms = r.render_ms;
-                self.output_tex = Some(make_texture(ctx, &r.output));
+                self.last_preview_ms = r.preview_ms;
+                self.last_worker_total_ms = r.worker_total_ms;
+                self.output_tex = Some(make_texture(ctx, r.preview));
+                self.status = format!(
+                    "Rendered {} × {} ({:.1} MP)",
+                    r.output.width,
+                    r.output.height,
+                    r.output.pixel_count() as f64 / 1e6
+                );
                 self.output_image = Some(r.output);
             }
             Err(msg) => {
@@ -1140,12 +1326,13 @@ impl App {
                     )
                     .changed();
                 // RGB → film raw spectral upsampler. hanatos2025 is the default
-                // spectral LUT; mallett2019 is a faster reflectance-basis matrix.
+                // spectral LUT; arctic2026alpha02 is the new memory-color
+                // reflectance LUT; mallett2019 is a faster matrix basis.
                 let method = &mut self.params.settings.rgb_to_raw_method;
                 egui::ComboBox::from_label("RGB→raw upsampling")
                     .selected_text(method.clone())
                     .show_ui(ui, |ui| {
-                        for opt in ["hanatos2025", "mallett2019"] {
+                        for opt in ["hanatos2025", "arctic2026alpha02", "mallett2019"] {
                             changed |= ui.selectable_value(method, opt.to_string(), opt).changed();
                         }
                     });
@@ -1258,6 +1445,18 @@ impl App {
             "pipeline build:{:>6.1} ms",
             self.last_pipeline_build_ms
         ));
+        ui.monospace(format!(
+            "clone/scale:   {:>6.1} / {:>5.1} ms",
+            self.last_input_clone_ms, self.last_scale_ms
+        ));
+        ui.monospace(format!(
+            "preview pack:  {:>6.1} ms",
+            self.last_preview_ms
+        ));
+        ui.monospace(format!(
+            "worker total:  {:>6.1} ms",
+            self.last_worker_total_ms
+        ));
         ui.monospace(format!("backend: {}", self.backend.name()));
         ui.label(egui::RichText::new(&self.status).small());
     }
@@ -1283,8 +1482,25 @@ impl eframe::App for App {
         let _ = frame;
 
         if self.dirty && self.image.is_some() {
-            self.dispatch_render(ctx);
-            self.dirty = false;
+            let now = Instant::now();
+            let dirty_since = *self.dirty_since.get_or_insert(now);
+            if self.render_job.is_some() {
+                self.pending_dirty = true;
+                self.dirty = false;
+                self.dirty_since = None;
+            } else {
+                let elapsed = now.saturating_duration_since(dirty_since);
+                if elapsed >= PREVIEW_DEBOUNCE {
+                    self.dispatch_render(ctx);
+                    self.dirty = false;
+                    self.dirty_since = None;
+                } else {
+                    ctx.request_repaint_after(PREVIEW_DEBOUNCE - elapsed);
+                }
+            }
+        }
+        if self.render_job.is_some() {
+            ctx.request_repaint_after(IN_FLIGHT_REPAINT);
         }
         self.poll_render_job(ctx);
         self.poll_export_job(ctx);
@@ -1326,7 +1542,7 @@ impl eframe::App for App {
     /// the child process is SIGKILLed before the GUI exits. Without
     /// this the f64 CLI orphans into its own process group and keeps
     /// hammering the CPU long after the window is gone.
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         let Some(job) = self.export_job.take() else {
             return;
         };
@@ -1511,6 +1727,75 @@ fn fps_label(ms: f32) -> &'static str {
     }
 }
 
+fn preview_pipeline_cache_key(
+    film_name: &str,
+    print_name: &str,
+    params: &RuntimeParams,
+) -> String {
+    serde_json::json!({
+        "film": film_name,
+        "print": print_name,
+        "film_dev": params.film_render.development_time,
+        "print_dev": params.print_render.development_time,
+        "scan_film": params.io.scan_film,
+        "input_color_space": params.io.input_color_space,
+        "input_cctf_decoding": params.io.input_cctf_decoding,
+        "input_gamut": params.io.input_gamut_compress,
+        "output_color_space": params.io.output_color_space,
+        "output_gamut": params.io.output_gamut_compress,
+        "settings": {
+            "rgb_to_raw_method": params.settings.rgb_to_raw_method,
+            "apply_hanatos2025_adaptation_window": params.settings.apply_hanatos2025_adaptation_window,
+            "apply_hanatos2025_adaptation_surface": params.settings.apply_hanatos2025_adaptation_surface,
+            "spectral_gaussian_blur": params.settings.spectral_gaussian_blur,
+            "lut_resolution": params.settings.lut_resolution,
+            "neutral_print_filters_from_database": params.settings.neutral_print_filters_from_database,
+            "use_cat16": params.settings.use_cat16,
+        },
+        "enlarger": {
+            "illuminant": params.enlarger.illuminant,
+            "c_filter_neutral": params.enlarger.c_filter_neutral,
+            "m_filter_neutral": params.enlarger.m_filter_neutral,
+            "y_filter_neutral": params.enlarger.y_filter_neutral,
+            "m_filter_shift": params.enlarger.m_filter_shift,
+            "y_filter_shift": params.enlarger.y_filter_shift,
+            "preflash_exposure": params.enlarger.preflash_exposure,
+            "preflash_m_filter_shift": params.enlarger.preflash_m_filter_shift,
+            "preflash_y_filter_shift": params.enlarger.preflash_y_filter_shift,
+            "normalize_print_exposure": params.enlarger.normalize_print_exposure,
+            "print_exposure_compensation": params.enlarger.print_exposure_compensation,
+        },
+        "exposure_compensation_ev": if params.enlarger.print_exposure_compensation {
+            params.camera.exposure_compensation_ev
+        } else {
+            0.0
+        },
+    })
+    .to_string()
+}
+
+fn rescale_preview_input_fast(image: Arc<ImageBuf>, factor: f32) -> ImageBuf {
+    if factor <= 0.0 || (factor - 1.0).abs() < 1e-6 {
+        return (*image).clone();
+    }
+    let new_w = (((image.width as f32) * factor).round() as u32).max(1);
+    let new_h = (((image.height as f32) * factor).round() as u32).max(1);
+    if new_w == image.width && new_h == image.height {
+        return (*image).clone();
+    }
+
+    let f32buf: Vec<f32> = image.data.par_iter().map(|&v| to_f32(v)).collect();
+    let src = image::ImageBuffer::<image::Rgb<f32>, _>::from_raw(
+        image.width,
+        image.height,
+        f32buf,
+    )
+    .expect("ImageBuf dims match its data length");
+    let dst = image::imageops::resize(&src, new_w, new_h, image::imageops::FilterType::CatmullRom);
+    let data: Vec<Scalar> = dst.into_raw().into_par_iter().map(from_f32).collect();
+    ImageBuf::from_data(new_w, new_h, data)
+}
+
 fn pick_default_stock(entries: &[ProfileEntry], preferred: &str) -> String {
     if entries.iter().any(|e| e.stock == preferred) {
         preferred.to_string()
@@ -1621,19 +1906,56 @@ fn load_raw(path: &Path) -> Result<ImageBuf> {
     let intermediate = dev
         .develop_intermediate(&raw)
         .map_err(|e| anyhow::anyhow!("RAW develop failed: {e:?}"))?;
-    let dyn_img = intermediate
-        .to_dynamic_image()
-        .ok_or_else(|| anyhow::anyhow!("RAW develop: empty image"))?;
-    // Force to RGB16 then promote to Scalar at full f32 precision.
-    let rgb16 = dyn_img.to_rgb16();
-    let (w, h) = (rgb16.width(), rgb16.height());
-    let inv_max = 1.0f32 / 65535.0;
-    let scalars: Vec<Scalar> = rgb16
-        .as_raw()
-        .par_iter()
-        .map(|&v| from_f32(v as f32 * inv_max))
-        .collect();
-    Ok(ImageBuf::from_data(w, h, scalars))
+    rawler_intermediate_to_image_buf(intermediate)
+}
+
+fn rawler_intermediate_to_image_buf(
+    intermediate: rawler::imgop::develop::Intermediate,
+) -> Result<ImageBuf> {
+    use rawler::imgop::develop::Intermediate;
+
+    let floor = |v: f32| from_f32(v.max(0.0));
+    match intermediate {
+        Intermediate::Monochrome(pixels) => {
+            let scalars: Vec<Scalar> = pixels
+                .data
+                .par_iter()
+                .flat_map_iter(|&v| {
+                    let v = floor(v);
+                    [v, v, v]
+                })
+                .collect();
+            Ok(ImageBuf::from_data(
+                pixels.width as u32,
+                pixels.height as u32,
+                scalars,
+            ))
+        }
+        Intermediate::ThreeColor(pixels) => {
+            let scalars: Vec<Scalar> = pixels
+                .data
+                .par_iter()
+                .flat_map_iter(|px| [floor(px[0]), floor(px[1]), floor(px[2])])
+                .collect();
+            Ok(ImageBuf::from_data(
+                pixels.width as u32,
+                pixels.height as u32,
+                scalars,
+            ))
+        }
+        Intermediate::FourColor(pixels) => {
+            let scalars: Vec<Scalar> = pixels
+                .data
+                .par_iter()
+                .flat_map_iter(|px| [floor(px[0]), floor(px[1]), floor(px[2])])
+                .collect();
+            Ok(ImageBuf::from_data(
+                pixels.width as u32,
+                pixels.height as u32,
+                scalars,
+            ))
+        }
+    }
 }
 
 /// Write the pipeline's RGB ImageBuf to disk. PNG is 8-bit (matches what
@@ -1681,23 +2003,63 @@ fn save_image(out: &ImageBuf, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Convert the pipeline's post-sRGB-encoded RGB ImageBuf into an egui
-/// ColorImage and upload as a texture. The pipeline emits values already
-/// clamped to [0, 1] and sRGB-encoded when `output_cctf_encoding` is on,
-/// so we just scale to 8-bit.
-fn make_texture(ctx: &egui::Context, out: &ImageBuf) -> egui::TextureHandle {
-    let w = out.width as usize;
-    let h = out.height as usize;
+/// Convert the pipeline's post-sRGB-encoded RGB ImageBuf into an RGBA preview.
+/// The full output remains available for saving, but the interactive texture is
+/// capped so a large RAW does not force a full-size upload into egui every pass.
+fn make_preview_texture_data(out: &ImageBuf) -> PreviewTextureData {
+    let src_w = out.width as usize;
+    let src_h = out.height as usize;
+    let max_src_dim = src_w.max(src_h).max(1);
+    let scale_num = PREVIEW_TEXTURE_MAX_DIM.min(max_src_dim);
+    let w = ((src_w * scale_num + max_src_dim / 2) / max_src_dim).max(1);
+    let h = ((src_h * scale_num + max_src_dim / 2) / max_src_dim).max(1);
     let mut rgba = vec![0u8; w * h * 4];
-    rgba.par_chunks_exact_mut(4)
-        .zip(out.data.par_chunks_exact(3))
-        .for_each(|(dst, px)| {
-            dst[0] = (to_f32(px[0]).clamp(0.0, 1.0) * 255.0).round() as u8;
-            dst[1] = (to_f32(px[1]).clamp(0.0, 1.0) * 255.0).round() as u8;
-            dst[2] = (to_f32(px[2]).clamp(0.0, 1.0) * 255.0).round() as u8;
-            dst[3] = 255;
+    rgba.par_chunks_exact_mut(w * 4)
+        .enumerate()
+        .for_each(|(y, row)| {
+            let gy = if h == src_h {
+                y as f32
+            } else {
+                (y as f32 + 0.5) * (src_h as f32 / h as f32) - 0.5
+            };
+            let y0 = gy.floor().clamp(0.0, (src_h - 1) as f32) as usize;
+            let y1 = (y0 + 1).min(src_h - 1);
+            let ty = (gy - y0 as f32).clamp(0.0, 1.0);
+
+            for x in 0..w {
+                let gx = if w == src_w {
+                    x as f32
+                } else {
+                    (x as f32 + 0.5) * (src_w as f32 / w as f32) - 0.5
+                };
+                let x0 = gx.floor().clamp(0.0, (src_w - 1) as f32) as usize;
+                let x1 = (x0 + 1).min(src_w - 1);
+                let tx = (gx - x0 as f32).clamp(0.0, 1.0);
+                let p00 = (y0 * src_w + x0) * 3;
+                let p10 = (y0 * src_w + x1) * 3;
+                let p01 = (y1 * src_w + x0) * 3;
+                let p11 = (y1 * src_w + x1) * 3;
+                let dst = x * 4;
+
+                for c in 0..3 {
+                    let v00 = to_f32(out.data[p00 + c]);
+                    let v10 = to_f32(out.data[p10 + c]);
+                    let v01 = to_f32(out.data[p01 + c]);
+                    let v11 = to_f32(out.data[p11 + c]);
+                    let top = v00 + (v10 - v00) * tx;
+                    let bot = v01 + (v11 - v01) * tx;
+                    row[dst + c] = ((top + (bot - top) * ty).clamp(0.0, 1.0) * 255.0).round() as u8;
+                }
+                row[dst + 3] = 255;
+            }
         });
-    let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
+    PreviewTextureData { size: [w, h], rgba }
+}
+
+/// Upload a prepared preview texture. The pipeline emits values already
+/// clamped to [0, 1] and sRGB-encoded when `output_cctf_encoding` is on.
+fn make_texture(ctx: &egui::Context, preview: PreviewTextureData) -> egui::TextureHandle {
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(preview.size, &preview.rgba);
     ctx.load_texture(
         "spektrafilm-output",
         color_image,
@@ -1728,23 +2090,29 @@ fn locate_f64_cli() -> Result<PathBuf, String> {
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
-        let p = dir.join("spektrafilm-f64");
-        if p.is_file() {
+        for name in f64_cli_names() {
+            let p = dir.join(name);
+            if p.is_file() {
+                return Ok(p);
+            }
+        }
+    }
+    for name in f64_cli_names() {
+        if let Some(p) = which_on_path(name) {
             return Ok(p);
         }
     }
-    if let Some(p) = which_on_path("spektrafilm-f64") {
-        return Ok(p);
-    }
     if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        let p = PathBuf::from(manifest)
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("release")
-            .join("spektrafilm-f64");
-        if p.is_file() {
-            return Ok(p);
+        for name in f64_cli_names() {
+            let p = PathBuf::from(&manifest)
+                .join("..")
+                .join("..")
+                .join("target")
+                .join("release")
+                .join(name);
+            if p.is_file() {
+                return Ok(p);
+            }
         }
     }
     Err("no f64 CLI found. Build it with \
@@ -1752,6 +2120,14 @@ fn locate_f64_cli() -> Result<PathBuf, String> {
          rename `target/release/spektrafilm` to `spektrafilm-f64`, \
          and either put it on PATH or set $SPEKTRAFILM_F64_CLI."
         .into())
+}
+
+fn f64_cli_names() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &["spektrafilm-f64.exe", "spektrafilm-f64"]
+    } else {
+        &["spektrafilm-f64"]
+    }
 }
 
 /// Minimal PATH lookup so we don't pull in the `which` crate for one call.

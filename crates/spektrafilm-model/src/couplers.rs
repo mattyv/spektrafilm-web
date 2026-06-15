@@ -4,6 +4,7 @@
 use spektrafilm_gpu::ComputeBackend;
 use spektrafilm_math::image::ImageBuf;
 use spektrafilm_math::precision::{from_f32, from_f64};
+use rayon::prelude::*;
 
 use crate::density_curves::normalize_density_curves;
 
@@ -53,7 +54,7 @@ pub fn compute_exposure_correction(
             from_f64(density_max[1]),
             from_f64(density_max[2]),
         ];
-        density_silver.pixels_mut().for_each(|px| {
+        density_silver.par_pixels_mut().for_each(|px| {
             for c in 0..3 {
                 px[c] = dmax[c] - px[c];
             }
@@ -79,13 +80,15 @@ pub fn compute_exposure_correction(
         ],
     ];
     let mut correction = ImageBuf::new(log_raw.width, log_raw.height);
-    for (i, px) in density_silver.pixels().enumerate() {
-        let out = correction.data.as_mut_slice();
-        let base = i * 3;
-        for m in 0..3 {
-            out[base + m] = px[0] * cm[0][m] + px[1] * cm[1][m] + px[2] * cm[2][m];
-        }
-    }
+    correction
+        .data
+        .par_chunks_exact_mut(3)
+        .zip(density_silver.data.par_chunks_exact(3))
+        .for_each(|(out, px)| {
+            for m in 0..3 {
+                out[m] = px[0] * cm[0][m] + px[1] * cm[1][m] + px[2] * cm[2][m];
+            }
+        });
 
     if diffusion_size_pixel > 0.0 {
         // Python: `(1 - w) * fast_gaussian_filter(corr, σ_size)
@@ -115,9 +118,9 @@ pub fn compute_exposure_correction(
     }
 
     let mut result = log_raw.clone();
-    for (r, c) in result.data.iter_mut().zip(correction.data.iter()) {
+    result.data.par_iter_mut().zip(correction.data.par_iter()).for_each(|(r, c)| {
         *r -= c;
-    }
+    });
     result
 }
 

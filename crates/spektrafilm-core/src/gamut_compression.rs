@@ -201,6 +201,7 @@ enum Kind {
 }
 
 /// Pre-computed output gamut compressor for a fixed output color space.
+#[derive(Clone)]
 pub struct OutputGamutCompress {
     kind: Kind,
     knee: (f64, f64, f64),

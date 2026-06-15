@@ -9,8 +9,48 @@ use spektrafilm_math::spectral::{self, N_WAVELENGTHS, TcLut};
 
 // Pull in BLAS for the spectra→tc_lut contraction (matches Python's
 // opt_einsum + numpy summation pattern bit-for-bit on macOS Accelerate).
+#[cfg(not(target_os = "windows"))]
 #[allow(unused_imports)]
 use blas_src as _;
+
+fn dgemm_no_transpose(a: &[f64], b: &[f64], c: &mut [f64], m: usize, n: usize, k: usize) {
+    assert_eq!(a.len(), m * k, "dgemm_no_transpose: a.len() != m*k");
+    assert_eq!(b.len(), k * n, "dgemm_no_transpose: b.len() != k*n");
+    assert_eq!(c.len(), m * n, "dgemm_no_transpose: c.len() != m*n");
+
+    #[cfg(not(target_os = "windows"))]
+    unsafe {
+        cblas::dgemm(
+            cblas::Layout::RowMajor,
+            cblas::Transpose::None,
+            cblas::Transpose::None,
+            m as i32,
+            n as i32,
+            k as i32,
+            1.0,
+            a,
+            k as i32,
+            b,
+            n as i32,
+            0.0,
+            c,
+            n as i32,
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        for row in 0..m {
+            for col in 0..n {
+                let mut sum = 0.0f64;
+                for kk in 0..k {
+                    sum += a[row * k + kk] * b[kk * n + col];
+                }
+                c[row * n + col] = sum;
+            }
+        }
+    }
+}
 
 /// Load the spectra LUT from the .npy file.
 /// Shape: (size, size, 81) — maps tc coordinates → 81-wavelength spectra.
@@ -35,6 +75,45 @@ pub fn load_spectra_lut(data_dir: &Path) -> Result<SpectraLut, String> {
     if shape[0] != shape[1] {
         return Err(format!(
             "spectra LUT must be square, got {}x{}",
+            shape[0], shape[1]
+        ));
+    }
+
+    Ok(SpectraLut {
+        size: shape[0],
+        n_wavelengths: shape[2],
+        data,
+    })
+}
+
+/// Load the arctic2026alpha02 effective-reflectance LUT.
+///
+/// Shape: (size, size, 81). The table is a D65-recovered unit-bright
+/// reflectance surface in triangular coordinates. At render time we relight it
+/// by the film reference illuminant before integrating against film
+/// sensitivity.
+pub fn load_arctic2026alpha02_lut(data_dir: &Path) -> Result<SpectraLut, String> {
+    let path = data_dir
+        .join("luts")
+        .join("spectral_upsampling")
+        .join("arctic2026alpha02")
+        .join("reflectance_xy_tc.npy");
+
+    let file = std::fs::File::open(&path)
+        .map_err(|e| format!("opening arctic2026alpha02 LUT {}: {e}", path.display()))?;
+    let reader = std::io::BufReader::new(file);
+
+    let (shape, data) =
+        npy::load_npy_f32(reader).map_err(|e| format!("loading arctic2026alpha02 LUT: {e}"))?;
+
+    if shape.len() != 3 || shape[2] != N_WAVELENGTHS {
+        return Err(format!(
+            "arctic2026alpha02 LUT shape mismatch: expected (N, N, {N_WAVELENGTHS}), got {shape:?}"
+        ));
+    }
+    if shape[0] != shape[1] {
+        return Err(format!(
+            "arctic2026alpha02 LUT must be square, got {}x{}",
             shape[0], shape[1]
         ));
     }
@@ -83,6 +162,47 @@ pub fn compute_tc_lut(spectra_lut: &SpectraLut, sensitivity: &[[f64; 3]]) -> TcL
             for wl in 0..n_wl {
                 for c in 0..3 {
                     raw[c] += spectrum[wl] as f64 * sensitivity[wl][c];
+                }
+            }
+            let base = (i * size + j) * channels;
+            data[base] = raw[0];
+            data[base + 1] = raw[1];
+            data[base + 2] = raw[2];
+        }
+    }
+
+    TcLut {
+        size,
+        channels,
+        data,
+    }
+}
+
+/// Build a TC→film-raw LUT from an effective-reflectance surface by relighting
+/// each reflectance with the film/reference illuminant first:
+///
+/// `raw[i,j,c] = sum_wl reflectance[i,j,wl] * illuminant[wl] * sensitivity[wl,c]`
+pub fn compute_reflectance_tc_lut(
+    reflectance_lut: &SpectraLut,
+    sensitivity: &[[f64; 3]],
+    illuminant: &[f64],
+) -> TcLut {
+    let size = reflectance_lut.size;
+    let n_wl = reflectance_lut
+        .n_wavelengths
+        .min(sensitivity.len())
+        .min(illuminant.len());
+    let channels = 3;
+    let mut data = vec![0.0f64; size * size * channels];
+
+    for i in 0..size {
+        for j in 0..size {
+            let spectrum = reflectance_lut.spectrum(i, j);
+            let mut raw = [0.0f64; 3];
+            for wl in 0..n_wl {
+                let lit = spectrum[wl] as f64 * illuminant[wl];
+                for c in 0..3 {
+                    raw[c] += lit * sensitivity[wl][c];
                 }
             }
             let base = (i * size + j) * channels;
@@ -190,24 +310,7 @@ pub fn compute_tc_lut_with_window(
         }
     }
     let mut data = vec![0.0f64; n_pix * channels];
-    unsafe {
-        cblas::dgemm(
-            cblas::Layout::RowMajor,
-            cblas::Transpose::None,
-            cblas::Transpose::None,
-            n_pix as i32,
-            channels as i32,
-            n_wl as i32,
-            1.0,
-            &spec_f64,
-            n_wl as i32,
-            &sw_flat,
-            channels as i32,
-            0.0,
-            &mut data,
-            channels as i32,
-        );
-    }
+    dgemm_no_transpose(&spec_f64, &sw_flat, &mut data, n_pix, channels, n_wl);
 
     TcLut {
         size,
