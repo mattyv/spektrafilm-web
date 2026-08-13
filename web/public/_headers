@@ -1,0 +1,24 @@
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+
+/wasm/*.wasm
+  Content-Type: application/wasm
+
+/wasm-threaded/*.wasm
+  Content-Type: application/wasm
+
+/wasm/*
+  Cache-Control: no-cache
+
+/wasm-threaded/*
+  Cache-Control: no-cache
+
+/data/*
+  Cache-Control: no-cache
+
+/sw.js
+  Cache-Control: no-cache, no-store, must-revalidate

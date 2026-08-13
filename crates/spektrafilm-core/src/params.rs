@@ -171,6 +171,42 @@ pub struct ScannerParams {
     pub unsharp_mask: [f32; 2],
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Adjustments {
+    #[serde(default)] pub temperature: f32,
+    #[serde(default)] pub tint: f32,
+    #[serde(default)] pub contrast: f32,
+    #[serde(default)] pub highlights: f32,
+    #[serde(default)] pub shadows: f32,
+    #[serde(default)] pub whites: f32,
+    #[serde(default)] pub blacks: f32,
+    #[serde(default)] pub saturation: f32,
+    #[serde(default)] pub vibrance: f32,
+    #[serde(default)] pub clarity: f32,
+    #[serde(default)] pub dehaze: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Composition {
+    #[serde(default)] pub straighten_degrees: f32,
+    #[serde(default = "default_original")] pub aspect: String,
+    #[serde(default = "default_100")] pub crop_scale: f32,
+    #[serde(default)] pub crop_x: f32,
+    #[serde(default)] pub crop_y: f32,
+    #[serde(default)] pub border: f32,
+    #[serde(default)] pub vignette_amount: f32,
+    #[serde(default = "default_50")] pub vignette_midpoint: f32,
+    #[serde(default)] pub vignette_roundness: f32,
+    #[serde(default = "default_50")] pub vignette_feather: f32,
+    #[serde(default)] pub vignette_highlights: f32,
+}
+
+impl Default for Composition {
+    fn default() -> Self {
+        Self { straighten_degrees: 0.0, aspect: "original".into(), crop_scale: 100.0, crop_x: 0.0, crop_y: 0.0, border: 0.0, vignette_amount: 0.0, vignette_midpoint: 50.0, vignette_roundness: 0.0, vignette_feather: 50.0, vignette_highlights: 0.0 }
+    }
+}
+
 impl Default for ScannerParams {
     fn default() -> Self {
         Self {
@@ -216,6 +252,10 @@ pub struct GrainParams {
     /// (upstream n_channels==1 has a single emulsion); not user-facing.
     #[serde(default)]
     pub monochrome: bool,
+    /// Deterministic render seed. Tiled browser exports offset it per strip
+    /// so stochastic fields do not repeat at strip boundaries.
+    #[serde(default)]
+    pub seed: u64,
 }
 
 fn default_02_f64() -> f64 {
@@ -249,6 +289,7 @@ impl Default for GrainParams {
             micro_structure: [0.2, 30.0],
             n_sub_layers: 1,
             monochrome: false,
+            seed: 0,
         }
     }
 }
@@ -418,6 +459,12 @@ pub struct GlareParams {
     pub roughness: f32,
     #[serde(default = "default_half")]
     pub blur: f32,
+    #[serde(default = "default_glare_seed")]
+    pub seed: u64,
+}
+
+fn default_glare_seed() -> u64 {
+    42
 }
 
 impl Default for GlareParams {
@@ -427,6 +474,7 @@ impl Default for GlareParams {
             percent: 0.03,
             roughness: 0.7,
             blur: 0.5,
+            seed: 42,
         }
     }
 }
@@ -701,6 +749,10 @@ pub struct RuntimeParams {
     pub io: IoParams,
     #[serde(default)]
     pub settings: SettingsParams,
+    #[serde(default)]
+    pub adjustments: Adjustments,
+    #[serde(default)]
+    pub composition: Composition,
 }
 
 impl Default for RuntimeParams {
@@ -713,6 +765,8 @@ impl Default for RuntimeParams {
             print_render: PrintRenderingParams::default(),
             io: IoParams::default(),
             settings: SettingsParams::default(),
+            adjustments: Adjustments::default(),
+            composition: Composition::default(),
         }
     }
 }
@@ -730,6 +784,9 @@ fn default_one() -> f32 {
 fn default_true() -> bool {
     true
 }
+fn default_original() -> String { "original".into() }
+fn default_100() -> f32 { 100.0 }
+fn default_50() -> f32 { 50.0 }
 fn default_center_weighted() -> String {
     "center_weighted".into()
 }

@@ -1,0 +1,12 @@
+Spektra Mobile third-party notices
+
+ICC color profiles
+
+Compact ICC Profiles by SauceControl are licensed CC0 1.0:
+https://github.com/saucecontrol/Compact-ICC-Profiles
+
+Elle Stone's Well-Behaved ICC Profiles are licensed CC BY-SA 3.0:
+https://github.com/ellelstone/elles_icc_profiles
+
+The embedded profiles are used only to label locally encoded image files with the
+selected output color space. See the source repositories for their full license texts.

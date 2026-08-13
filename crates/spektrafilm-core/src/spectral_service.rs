@@ -2,14 +2,14 @@
 /// the TC LUT for a given film stock's sensitivity.
 ///
 /// Port of Python `compute_hanatos2025_tc_lut` and `_load_hanatos2025_spectra_lut`.
-use std::path::Path;
+use std::{io::Read, path::Path};
 
 use spektrafilm_math::npy;
 use spektrafilm_math::spectral::{self, N_WAVELENGTHS, TcLut};
 
 // Pull in BLAS for the spectra→tc_lut contraction (matches Python's
 // opt_einsum + numpy summation pattern bit-for-bit on macOS Accelerate).
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_arch = "wasm32")))]
 #[allow(unused_imports)]
 use blas_src as _;
 
@@ -18,7 +18,7 @@ fn dgemm_no_transpose(a: &[f64], b: &[f64], c: &mut [f64], m: usize, n: usize, k
     assert_eq!(b.len(), k * n, "dgemm_no_transpose: b.len() != k*n");
     assert_eq!(c.len(), m * n, "dgemm_no_transpose: c.len() != m*n");
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(not(target_os = "windows"), not(target_arch = "wasm32")))]
     unsafe {
         cblas::dgemm(
             cblas::Layout::RowMajor,
@@ -38,7 +38,7 @@ fn dgemm_no_transpose(a: &[f64], b: &[f64], c: &mut [f64], m: usize, n: usize, k
         );
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_arch = "wasm32"))]
     {
         for row in 0..m {
             for col in 0..n {
@@ -64,21 +64,23 @@ pub fn load_spectra_lut(data_dir: &Path) -> Result<SpectraLut, String> {
         .map_err(|e| format!("opening spectra LUT {}: {e}", path.display()))?;
     let reader = std::io::BufReader::new(file);
 
-    let (shape, data) =
-        npy::load_npy_f32(reader).map_err(|e| format!("loading spectra LUT: {e}"))?;
+    load_spectra_lut_reader(reader, "spectra LUT")
+}
 
+/// Load a spectral table from packaged `.npy` bytes.
+pub fn load_spectra_lut_reader<R: Read>(reader: R, source: &str) -> Result<SpectraLut, String> {
+    let (shape, data) = npy::load_npy_f32(reader).map_err(|e| format!("loading {source}: {e}"))?;
     if shape.len() != 3 || shape[2] != N_WAVELENGTHS {
         return Err(format!(
-            "spectra LUT shape mismatch: expected (N, N, {N_WAVELENGTHS}), got {shape:?}"
+            "{source} shape mismatch: expected (N, N, {N_WAVELENGTHS}), got {shape:?}"
         ));
     }
     if shape[0] != shape[1] {
         return Err(format!(
-            "spectra LUT must be square, got {}x{}",
+            "{source} must be square, got {}x{}",
             shape[0], shape[1]
         ));
     }
-
     Ok(SpectraLut {
         size: shape[0],
         n_wavelengths: shape[2],
@@ -103,26 +105,7 @@ pub fn load_arctic2026alpha02_lut(data_dir: &Path) -> Result<SpectraLut, String>
         .map_err(|e| format!("opening arctic2026alpha02 LUT {}: {e}", path.display()))?;
     let reader = std::io::BufReader::new(file);
 
-    let (shape, data) =
-        npy::load_npy_f32(reader).map_err(|e| format!("loading arctic2026alpha02 LUT: {e}"))?;
-
-    if shape.len() != 3 || shape[2] != N_WAVELENGTHS {
-        return Err(format!(
-            "arctic2026alpha02 LUT shape mismatch: expected (N, N, {N_WAVELENGTHS}), got {shape:?}"
-        ));
-    }
-    if shape[0] != shape[1] {
-        return Err(format!(
-            "arctic2026alpha02 LUT must be square, got {}x{}",
-            shape[0], shape[1]
-        ));
-    }
-
-    Ok(SpectraLut {
-        size: shape[0],
-        n_wavelengths: shape[2],
-        data,
-    })
+    load_spectra_lut_reader(reader, "arctic2026alpha02 LUT")
 }
 
 pub struct SpectraLut {

@@ -5,13 +5,26 @@ pub mod cuda_backend;
 pub mod wgpu_backend;
 
 use spektrafilm_math::image::ImageBuf;
+use std::{future::Future, pin::Pin};
+
+pub type ImageFuture<'a> = Pin<Box<dyn Future<Output = ImageBuf> + 'a>>;
 
 /// Compute backend abstraction. Each method corresponds to a GPU-friendly
 /// operation in the film simulation pipeline.
 ///
 /// Default implementations fall back to CPU. GPU backends override the
 /// spectral methods for massive speedups.
-pub trait ComputeBackend: Send + Sync {
+#[cfg(not(all(target_arch = "wasm32", target_feature = "atomics")))]
+pub trait ComputeBackendBounds: Send + Sync {}
+#[cfg(not(all(target_arch = "wasm32", target_feature = "atomics")))]
+impl<T: Send + Sync> ComputeBackendBounds for T {}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
+pub trait ComputeBackendBounds {}
+#[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
+impl<T> ComputeBackendBounds for T {}
+
+pub trait ComputeBackend: ComputeBackendBounds {
     fn colorspace_convert(&self, img: &ImageBuf, matrix: &[[f32; 3]; 3]) -> ImageBuf;
     fn cctf_encode_srgb(&self, img: &ImageBuf) -> ImageBuf;
     fn cctf_decode_srgb(&self, img: &ImageBuf) -> ImageBuf;
@@ -131,6 +144,15 @@ pub trait ComputeBackend: Send + Sync {
     /// Returns `None` to fall back to per-stage trait methods. CPU backend
     /// always returns `None`; wgpu implements it.
     fn try_run_film_chain(&self, _params: &FilmChainParams<'_>) -> Option<ImageBuf> {
+        None
+    }
+
+    /// Browser-safe resident path. Implementations must submit synchronously
+    /// and return a future that owns everything needed for asynchronous readback.
+    fn try_run_film_chain_async<'a>(
+        &'a self,
+        _params: &FilmChainParams<'_>,
+    ) -> Option<ImageFuture<'a>> {
         None
     }
 
@@ -427,7 +449,7 @@ pub fn select_backend() -> Box<dyn ComputeBackend> {
         tracing::warn!("CUDA backend requested but spektrafilm-gpu was built without cuda-backend");
     }
 
-    #[cfg(feature = "wgpu-backend")]
+    #[cfg(all(feature = "wgpu-backend", not(target_arch = "wasm32")))]
     {
         if requested.as_deref().is_none() || requested.as_deref() == Some("wgpu") {
             if let Some(gpu) = wgpu_backend::WgpuBackend::new() {

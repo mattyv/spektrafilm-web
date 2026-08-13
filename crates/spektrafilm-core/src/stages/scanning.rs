@@ -328,7 +328,7 @@ pub fn scan(
             glare.percent,
             glare.roughness,
             glare.blur,
-            42, // fixed seed for reproducible parity tests; Python uses np.random which differs
+            glare.seed,
         );
         spektrafilm_model::glare::add_glare_with_amount(&mut rgb, &glare_amount, glare_rgb_offset);
     }

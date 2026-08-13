@@ -1,12 +1,12 @@
 // Stochastic grain generation.
 // Poisson-binomial particle model with dye cloud blur and lognormal micro-structure.
 
+use rayon::prelude::*;
 use spektrafilm_gpu::ComputeBackend;
 use spektrafilm_math::gaussian;
 use spektrafilm_math::image::ImageBuf;
 use spektrafilm_math::precision::{Scalar, ZERO, from_f64};
-use rayon::prelude::*;
-use std::time::Instant;
+use web_time::Instant;
 
 fn stage_timings_enabled() -> bool {
     std::env::var_os("SPEKTRAFILM_STAGE_TIMINGS").is_some()
@@ -111,6 +111,7 @@ pub fn apply_grain_to_density(
     grain_blur: f32,
     n_sub_layers: u32,
     monochrome: bool,
+    base_seed: u64,
     backend: &dyn ComputeBackend,
 ) -> ImageBuf {
     let stage_timings = stage_timings_enabled();
@@ -136,8 +137,7 @@ pub fn apply_grain_to_density(
             // Add density_min to input (kept in Scalar precision)
             let dmin_s = from_f64(density_min[ch]);
             let t = Instant::now();
-            let density_ch: Vec<Scalar> =
-                density_cmy.pixels().map(|px| px[ch] + dmin_s).collect();
+            let density_ch: Vec<Scalar> = density_cmy.pixels().map(|px| px[ch] + dmin_s).collect();
             print_stage_timing(stage_timings, "grain.extract_channel", t);
 
             let mut grain_sum = vec![ZERO; density_ch.len()];
@@ -148,7 +148,7 @@ pub fn apply_grain_to_density(
                 // from channel 0's RNG stream (upstream n_channels==1 has a
                 // single emulsion, seed ch=0).
                 let seed_ch = if monochrome { 0 } else { ch as u64 };
-                let seed = seed_ch + (sl as u64) * 10;
+                let seed = base_seed.wrapping_add(seed_ch + (sl as u64) * 10);
                 let g = layer_particle_model(
                     &density_ch,
                     w,

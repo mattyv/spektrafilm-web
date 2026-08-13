@@ -22,11 +22,12 @@ thiserror.workspace = true
 tracing.workspace = true
 libm.workspace = true
 image.workspace = true
+web-time.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cblas = "0.4"
 blas-src = { version = "0.10", features = ["accelerate"] }
 
-[target.'cfg(all(not(target_os = "macos"), not(target_os = "windows")))'.dependencies]
+[target.'cfg(all(not(target_os = "macos"), not(target_os = "windows"), not(target_arch = "wasm32")))'.dependencies]
 cblas = "0.4"
 blas-src = { version = "0.10", features = ["openblas"] }

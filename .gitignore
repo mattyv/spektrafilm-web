@@ -14,3 +14,14 @@ AGENTS.md
 /*.tif
 /*.tiff
 /*.jpg
+
+web/node_modules/
+web/dist/
+web/coverage/
+web/test-results/
+web/public/data/
+web/public/asset-manifest.json
+web/public/icon.jpg
+.wrangler/cache/
+.hunch/
+.archi/.preview-request

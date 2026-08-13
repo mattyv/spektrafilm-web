@@ -8,7 +8,7 @@ use crate::{ComputeBackend, Lut3D};
 // Pull in BLAS-src so `cblas_dgemm` is available at link time. The
 // provider crate (Accelerate on macOS, OpenBLAS elsewhere) is selected
 // in this crate's Cargo.toml.
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_arch = "wasm32")))]
 #[allow(unused_imports)]
 use blas_src as _;
 
@@ -47,7 +47,7 @@ fn dgemm_blas(
 ) {
     assert_eq!(a.len(), m * k, "dgemm_blas: a.len() != m*k");
     assert_eq!(c.len(), m * n, "dgemm_blas: c.len() != m*n");
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(not(target_os = "windows"), not(target_arch = "wasm32")))]
     unsafe {
         cblas::dgemm(
             cblas::Layout::RowMajor,
@@ -69,22 +69,24 @@ fn dgemm_blas(
             n as i32,
         );
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_arch = "wasm32"))]
     {
         let _ = ldb;
-        c.par_chunks_exact_mut(n).enumerate().for_each(|(row, crow)| {
-            for col in 0..n {
-                let mut sum = 0.0f64;
-                for kk in 0..k {
-                    let bv = match trans_b {
-                        Transpose::None => b[kk * n + col],
-                        Transpose::Ordinary => b[col * k + kk],
-                    };
-                    sum += a[row * k + kk] * bv;
+        c.par_chunks_exact_mut(n)
+            .enumerate()
+            .for_each(|(row, crow)| {
+                for col in 0..n {
+                    let mut sum = 0.0f64;
+                    for kk in 0..k {
+                        let bv = match trans_b {
+                            Transpose::None => b[kk * n + col],
+                            Transpose::Ordinary => b[col * k + kk],
+                        };
+                        sum += a[row * k + kk] * bv;
+                    }
+                    crow[col] = sum;
                 }
-                crow[col] = sum;
-            }
-        });
+            });
     }
 }
 

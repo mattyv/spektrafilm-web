@@ -63,9 +63,7 @@ fn sanitize_spectral_inputs(
 }
 
 fn matrix_f32(m: &[[f64; 3]; 3]) -> Vec<f32> {
-    m.iter()
-        .flat_map(|r| r.iter().map(|&v| v as f32))
-        .collect()
+    m.iter().flat_map(|r| r.iter().map(|&v| v as f32)).collect()
 }
 
 fn flatten_curves_f32(v: &[[f64; 3]]) -> Vec<f32> {
@@ -80,8 +78,7 @@ fn is_uniform_grid(xs: &[f64]) -> bool {
     }
     let step = xs[1] - xs[0];
     let tol = step.abs().max(1.0) * 1e-6;
-    xs.windows(2)
-        .all(|w| ((w[1] - w[0]) - step).abs() <= tol)
+    xs.windows(2).all(|w| ((w[1] - w[0]) - step).abs() <= tol)
 }
 
 const MAX_BLUR_RADIUS: u32 = 256;
@@ -1396,7 +1393,9 @@ impl CudaBackend {
         n_pixels: u32,
         scale: f32,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut launch = self.stream.launch_builder(&self.log_to_linear_scaled_kernel);
+        let mut launch = self
+            .stream
+            .launch_builder(&self.log_to_linear_scaled_kernel);
         launch.arg(img).arg(&n_pixels).arg(&scale);
         unsafe { launch.launch(LaunchConfig::for_num_elems(n_pixels)) }?;
         Ok(())
@@ -1407,7 +1406,9 @@ impl CudaBackend {
         img: &mut CudaSlice<f32>,
         n_pixels: u32,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut launch = self.stream.launch_builder(&self.linear_to_log10_outer_kernel);
+        let mut launch = self
+            .stream
+            .launch_builder(&self.linear_to_log10_outer_kernel);
         launch.arg(img).arg(&n_pixels);
         unsafe { launch.launch(LaunchConfig::for_num_elems(n_pixels)) }?;
         Ok(())
@@ -1725,7 +1726,7 @@ impl CudaBackend {
             let positive = if dp.is_positive { 1u32 } else { 0u32 };
             let mut launch = self.stream.launch_builder(&self.dir_matmul_kernel);
             launch
-            .arg(&mut *density)
+                .arg(&mut *density)
                 .arg(&n_pixels)
                 .arg(&positive)
                 .arg(&dp.density_max[0])
@@ -1983,8 +1984,7 @@ impl CudaBackend {
             unsafe { launch.launch(LaunchConfig::for_num_elems(n_pixels)) }?;
         }
 
-        let film_log_exp_f32: Vec<f32> =
-            p.film_log_exposure.iter().map(|&v| v as f32).collect();
+        let film_log_exp_f32: Vec<f32> = p.film_log_exposure.iter().map(|&v| v as f32).collect();
         let film_curves_f32 = flatten_curves_f32(p.film_density_curves_normalized);
         let film_log_exp_dev = self.stream.clone_htod(&film_log_exp_f32)?;
         let film_curves_dev = self.stream.clone_htod(&film_curves_f32)?;
@@ -2027,8 +2027,7 @@ impl CudaBackend {
             );
             film_bd.resize(p.film_channel_density.len(), 0.0);
             film_cd.resize(p.film_channel_density.len() * 3, 0.0);
-            let print_illu_f32: Vec<f32> =
-                p.print_illuminant.iter().map(|&v| v as f32).collect();
+            let print_illu_f32: Vec<f32> = p.print_illuminant.iter().map(|&v| v as f32).collect();
             let print_sens_f32 = flatten_curves_f32(p.print_sensitivity);
             let film_cd_dev = self.stream.clone_htod(&film_cd)?;
             let film_bd_dev = self.stream.clone_htod(&film_bd)?;
@@ -2225,9 +2224,11 @@ impl ComputeBackend for CudaBackend {
             cat,
             xyz_to_rgb,
         ) {
-            Ok(result) => {
-                ImageBuf::from_data(density_cmy.width, density_cmy.height, f32_to_scalars(result))
-            }
+            Ok(result) => ImageBuf::from_data(
+                density_cmy.width,
+                density_cmy.height,
+                f32_to_scalars(result),
+            ),
             Err(e) => {
                 tracing::warn!(error = %e, "CUDA scan_spectral failed; falling back to CPU");
                 cpu_backend::scan_spectral_cpu(
@@ -2262,9 +2263,11 @@ impl ComputeBackend for CudaBackend {
             normalization_factor,
             preflash,
         ) {
-            Ok(result) => {
-                ImageBuf::from_data(density_cmy.width, density_cmy.height, f32_to_scalars(result))
-            }
+            Ok(result) => ImageBuf::from_data(
+                density_cmy.width,
+                density_cmy.height,
+                f32_to_scalars(result),
+            ),
             Err(e) => {
                 tracing::warn!(error = %e, "CUDA print_spectral failed; falling back to CPU");
                 cpu_backend::print_spectral_cpu(

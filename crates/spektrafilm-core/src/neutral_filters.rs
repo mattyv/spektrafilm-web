@@ -30,6 +30,15 @@ impl NeutralFilters {
         Self { db }
     }
 
+    /// Parse the database from packaged bytes. Invalid or absent data keeps
+    /// the existing empty-database fallback used by native loading.
+    pub fn from_json(bytes: &[u8]) -> Self {
+        let db = serde_json::from_slice::<RawDb>(bytes)
+            .map(|raw| raw.0)
+            .unwrap_or_default();
+        Self { db }
+    }
+
     /// Look up filter CC values for a (print_stock, illuminant, film_stock) combination.
     /// Returns `None` if the combination isn't in the database.
     pub fn lookup(

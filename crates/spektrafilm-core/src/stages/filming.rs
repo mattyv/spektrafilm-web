@@ -8,7 +8,7 @@ use spektrafilm_math::colorspace;
 use spektrafilm_math::image::ImageBuf;
 use spektrafilm_math::precision::{from_f32, from_f64, to_f32};
 use spektrafilm_math::spectral::{self, TcLut};
-use std::time::Instant;
+use web_time::Instant;
 
 use crate::params::RuntimeParams;
 use crate::profile::Profile;
@@ -486,6 +486,7 @@ pub fn develop(
             grain.blur,
             grain.n_sub_layers,
             grain.monochrome,
+            grain.seed,
             backend,
         );
         print_stage_timing(stage_timings, "filming_develop.grain", t);
@@ -503,7 +504,16 @@ pub fn process(
     tc_lut: Option<&TcLut>,
 ) -> ImageBuf {
     let ref_illuminant = select_illuminant(&film.info.reference_illuminant);
-    let log_raw = expose(image, film, params, backend, tc_lut, None, ref_illuminant, 1.0);
+    let log_raw = expose(
+        image,
+        film,
+        params,
+        backend,
+        tc_lut,
+        None,
+        ref_illuminant,
+        1.0,
+    );
     develop(&log_raw, film, params, backend)
 }
 

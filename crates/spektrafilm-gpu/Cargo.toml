@@ -18,7 +18,9 @@ tracing.workspace = true
 wgpu = { workspace = true, optional = true, features = ["wgsl"] }
 cudarc = { version = "0.19.7", optional = true, default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-12000"] }
 bytemuck = { version = "1.25", features = ["derive"] }
+futures-channel = "0.3"
 pollster = "0.4"
+web-time.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Native BLAS for CPU spectral integration — matches numpy's
@@ -27,7 +29,7 @@ cblas = "0.4"
 blas-src = { version = "0.10", features = ["accelerate"] }
 accelerate-src = "0.3"
 
-[target.'cfg(all(not(target_os = "macos"), not(target_os = "windows")))'.dependencies]
+[target.'cfg(all(not(target_os = "macos"), not(target_os = "windows"), not(target_arch = "wasm32")))'.dependencies]
 cblas = "0.4"
 blas-src = { version = "0.10", features = ["openblas"] }
 openblas-src = "0.10"

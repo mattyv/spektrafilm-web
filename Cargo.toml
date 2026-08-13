@@ -7,10 +7,11 @@ members = [
     "crates/spektrafilm-model",
     "crates/spektrafilm-cli",
     "crates/spektrafilm-gui",
+    "crates/spektrafilm-web",
 ]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.2.12"
 edition = "2024"
 license = "GPL-3.0"
 rust-version = "1.85"
@@ -39,8 +40,15 @@ anyhow = "1"
 byteorder = "1"
 libm = "0.2"
 rustfft = "6"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+web-time = "1"
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
 opt-level = 3
+
+[patch.crates-io]
+rawler = { path = "vendor/rawler" }

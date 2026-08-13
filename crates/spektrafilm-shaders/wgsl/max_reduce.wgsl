@@ -18,7 +18,12 @@ fn main(
     @builtin(local_invocation_id) lid: vec3<u32>
 ) {
     let local = lid.x;
-    let base = wid.x * 2048u + local * 8u;
+    let block = wid.x + wid.y * 65535u;
+    let blocks = (params.n_values - 1u) / 2048u + 1u;
+    if block >= blocks {
+        return;
+    }
+    let base = block * 2048u + local * 8u;
     var m = -3.402823466e38;
     for (var i = 0u; i < 8u; i++) {
         let idx = base + i;
@@ -42,6 +47,6 @@ fn main(
     }
 
     if local == 0u {
-        output[wid.x] = partial[0];
+        output[block] = partial[0];
     }
 }

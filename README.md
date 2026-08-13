@@ -1,5 +1,11 @@
 # spektrafilm-rs
 
+## Spektra Mobile web app
+
+[Open Spektra Mobile on Cloudflare Pages](https://spektra-mobile.pages.dev/) — RAW development and the full film → print → scan workflow run locally in your browser; photos are not uploaded.
+
+[Read the web colour workflow](docs/web-colour-workflow.md) for recommended input, RAW, preview, and export settings, plus current colour-management limits.
+
 ![banner](docs/card.jpg)
 
 A Rust port of [andreavolpato/spektrafilm](https://github.com/andreavolpato/spektrafilm) — a spectral simulator for analogue colour film and the print-and-scan chain.

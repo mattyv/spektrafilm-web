@@ -3,6 +3,7 @@
 /// Mirrors Python `profiles/io.py`. Profiles contain spectral sensitivity data,
 /// density curves, and metadata for each film stock and paper type.
 use serde::Deserialize;
+use std::io::Read;
 use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -348,8 +349,14 @@ pub fn load_profile(path: &Path) -> Result<Profile, ProfileError> {
     let file =
         std::fs::File::open(path).map_err(|e| ProfileError::Io(path.display().to_string(), e))?;
     let reader = std::io::BufReader::new(file);
-    let mut profile: Profile = serde_json::from_reader(reader)
-        .map_err(|e| ProfileError::Parse(path.display().to_string(), e))?;
+    load_profile_reader(reader, &path.display().to_string())
+}
+
+/// Load a profile from any byte stream. Browser adapters use this to avoid
+/// inventing temporary filesystem paths for packaged profile assets.
+pub fn load_profile_reader<R: Read>(reader: R, source: &str) -> Result<Profile, ProfileError> {
+    let mut profile: Profile =
+        serde_json::from_reader(reader).map_err(|e| ProfileError::Parse(source.into(), e))?;
     validate_profile(&profile)?;
     // Resolve the default base+fog column so the field is usable straight
     // after load. `resolve_for_render` re-selects it for B&W development-time

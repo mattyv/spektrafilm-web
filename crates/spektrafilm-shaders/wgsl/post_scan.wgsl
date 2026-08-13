@@ -18,9 +18,9 @@ fn srgb_encode(x_in: f32) -> f32 {
     return 1.055 * pow(x, 1.0 / 2.4) - 0.055;
 }
 
-@compute @workgroup_size(1024)
+@compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let idx = gid.x;
+    let idx = gid.x + gid.y * 16776960u;
     if idx >= params.n_pixels {
         return;
     }

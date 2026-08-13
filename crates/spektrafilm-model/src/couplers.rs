@@ -1,10 +1,10 @@
 // DIR (Development Inhibitor Release) coupler model.
 // Handles same-layer and inter-layer inhibition with spatial diffusion.
 
+use rayon::prelude::*;
 use spektrafilm_gpu::ComputeBackend;
 use spektrafilm_math::image::ImageBuf;
 use spektrafilm_math::precision::{from_f32, from_f64};
-use rayon::prelude::*;
 
 use crate::density_curves::normalize_density_curves;
 
@@ -118,9 +118,13 @@ pub fn compute_exposure_correction(
     }
 
     let mut result = log_raw.clone();
-    result.data.par_iter_mut().zip(correction.data.par_iter()).for_each(|(r, c)| {
-        *r -= c;
-    });
+    result
+        .data
+        .par_iter_mut()
+        .zip(correction.data.par_iter())
+        .for_each(|(r, c)| {
+            *r -= c;
+        });
     result
 }
 

@@ -6,7 +6,7 @@
 ///   3. Compute print exposure normalization factor from midgray spectral density
 ///   4. Pass all calibration data to the pipeline stages
 use std::path::Path;
-use std::time::Instant;
+use web_time::Instant;
 
 use spektrafilm_gpu::ComputeBackend;
 use spektrafilm_math::image::ImageBuf;
@@ -118,6 +118,28 @@ pub struct Pipeline {
     output_gamut: crate::gamut_compression::OutputGamutCompress,
 }
 
+/// Asset seam for environments without a native filesystem.
+pub trait PipelineAssets {
+    fn neutral_filters(&self) -> crate::neutral_filters::NeutralFilters;
+    fn spectra_lut(&self, method: &str) -> Result<spectral_service::SpectraLut, String>;
+}
+
+struct FilePipelineAssets<'a>(&'a Path);
+
+impl PipelineAssets for FilePipelineAssets<'_> {
+    fn neutral_filters(&self) -> crate::neutral_filters::NeutralFilters {
+        crate::neutral_filters::NeutralFilters::load(self.0)
+    }
+
+    fn spectra_lut(&self, method: &str) -> Result<spectral_service::SpectraLut, String> {
+        match method {
+            "hanatos2025" => spectral_service::load_spectra_lut(self.0),
+            "arctic2026alpha02" => spectral_service::load_arctic2026alpha02_lut(self.0),
+            other => Err(format!("no spectral asset for method {other:?}")),
+        }
+    }
+}
+
 impl Pipeline {
     /// Accessor for the pre-computed TC LUT (used by parity tests).
     pub fn tc_lut(&self) -> Option<&TcLut> {
@@ -188,8 +210,18 @@ impl Pipeline {
     pub fn new_with_spectral(
         film: Profile,
         print: Profile,
-        mut params: RuntimeParams,
+        params: RuntimeParams,
         data_dir: &Path,
+    ) -> Result<Self, String> {
+        Self::new_with_assets(film, print, params, &FilePipelineAssets(data_dir))
+    }
+
+    /// Create the calibrated pipeline from an explicit asset provider.
+    pub fn new_with_assets(
+        film: Profile,
+        print: Profile,
+        mut params: RuntimeParams,
+        assets: &dyn PipelineAssets,
     ) -> Result<Self, String> {
         // B&W profiles: collapse the development-time family to the selected
         // time and broadcast the single channel onto the 3-channel engine
@@ -212,7 +244,7 @@ impl Pipeline {
         // f32 here costs ~4e-8 precision through the `10^(-cc/100)` step.
         let mut neutral_cmy_f64: Option<[f64; 3]> = None;
         if params.settings.neutral_print_filters_from_database {
-            let db = crate::neutral_filters::NeutralFilters::load(data_dir);
+            let db = assets.neutral_filters();
             let print_stock = print.info.stock.as_deref().unwrap_or("");
             let film_stock = film.info.stock.as_deref().unwrap_or("");
             if let Some([c, m, y]) = db.lookup(print_stock, &params.enlarger.illuminant, film_stock)
@@ -254,7 +286,7 @@ impl Pipeline {
         let (tc_lut, mallett_core): (Option<TcLut>, Option<[[f64; 3]; 3]>) =
             match params.settings.rgb_to_raw_method.as_str() {
                 "hanatos2025" => {
-                    let spectra_lut = spectral_service::load_spectra_lut(data_dir)?;
+                    let spectra_lut = assets.spectra_lut("hanatos2025")?;
                     let window_params: Vec<f64> =
                         film.data.hanatos2025_adaptation_window_params.clone();
                     let tc_lut = if params.settings.apply_hanatos2025_adaptation_window
@@ -287,7 +319,7 @@ impl Pipeline {
                 }
                 "arctic2026alpha02" => {
                     front_illuminant = "D65".into();
-                    let reflectance_lut = spectral_service::load_arctic2026alpha02_lut(data_dir)?;
+                    let reflectance_lut = assets.spectra_lut("arctic2026alpha02")?;
                     let tc_lut = spectral_service::compute_reflectance_tc_lut(
                         &reflectance_lut,
                         &sensitivity,
@@ -575,7 +607,10 @@ impl Pipeline {
         if self.tc_lut.is_none() && self.mallett_core.is_none() {
             return None;
         }
-        tracing::info!(backend = backend.name(), "pipeline: borrowed resident start");
+        tracing::info!(
+            backend = backend.name(),
+            "pipeline: borrowed resident start"
+        );
         let color_ref = crate::color_reference::ColorReference::compute(
             &self.film,
             &self.print,
@@ -624,12 +659,12 @@ impl Pipeline {
     /// Try the GPU-resident fast path. Builds all the per-stage data and
     /// hands it to the backend's `try_run_film_chain`. The output is linear RGB
     /// (clipped to [0,1]) — sRGB encoding is applied by `apply_post_scan`.
-    fn try_gpu_resident(
+    fn with_gpu_params<R>(
         &self,
         image: &ImageBuf,
-        backend: &dyn ComputeBackend,
         color_ref: &crate::color_reference::ColorReference,
-    ) -> Option<ImageBuf> {
+        run: impl FnOnce(&spektrafilm_gpu::FilmChainParams<'_>) -> R,
+    ) -> Option<R> {
         // Bake the exposure scale (auto-exposure × manual EV compensation)
         // into the front-pass matrix. Both upsamplers (hanatos and mallett)
         // are homogeneous in the input RGB, so scaling the matrix is
@@ -1013,7 +1048,7 @@ impl Pipeline {
                     g.uniformity[2] as f32,
                 ],
                 n_sub_layers: n_sub,
-                base_seed: 0,
+                base_seed: g.seed as u32,
                 grain_blur: g.blur,
                 monochrome: g.monochrome,
             })
@@ -1059,7 +1094,7 @@ impl Pipeline {
                 mu: mu as f32,
                 sigma: sigma as f32,
                 blur_px: g.blur,
-                base_seed: 42,
+                base_seed: g.seed as u32,
                 rgb_offset: offset_rgb,
             })
         } else {
@@ -1161,7 +1196,40 @@ impl Pipeline {
             print_exposure_scale,
             output_cctf_encoding: self.params.io.output_cctf_encoding,
         };
-        backend.try_run_film_chain(&params)
+        Some(run(&params))
+    }
+
+    fn try_gpu_resident(
+        &self,
+        image: &ImageBuf,
+        backend: &dyn ComputeBackend,
+        color_ref: &crate::color_reference::ColorReference,
+    ) -> Option<ImageBuf> {
+        self.with_gpu_params(image, color_ref, |params| {
+            backend.try_run_film_chain(params)
+        })
+        .flatten()
+    }
+
+    pub async fn process_gpu_async(
+        &self,
+        image: ImageBuf,
+        backend: &dyn ComputeBackend,
+    ) -> Option<ImageBuf> {
+        let image = self.rescale_working(image);
+        let color_ref = crate::color_reference::ColorReference::compute(
+            &self.film,
+            &self.print,
+            &self.params,
+            &self.print_illuminant,
+            self.print_exposure_factor,
+        );
+        let future = self
+            .with_gpu_params(&image, &color_ref, |params| {
+                backend.try_run_film_chain_async(params)
+            })
+            .flatten()?;
+        Some(future.await)
     }
 
     /// After the GPU fast path returns linear RGB, apply sRGB encoding + clip

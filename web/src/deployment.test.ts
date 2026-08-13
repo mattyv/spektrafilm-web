@@ -1,0 +1,40 @@
+import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+
+describe("deployment assets", () => {
+  it("revalidates stable engine assets and keeps the offline cache version in sync", () => {
+    const headers = readFileSync(new URL("../public/_headers", import.meta.url), "utf8");
+    expect(headers).not.toMatch(/\/(?:wasm|data)[\s\S]*?immutable/);
+    expect(headers).toMatch(/\/wasm\/\*\s+Cache-Control: no-cache/);
+    expect(headers).toMatch(/\/sw\.js\s+Cache-Control: no-cache, no-store, must-revalidate/);
+    expect(headers).toMatch(/\/wasm\/\*\.wasm\s+Content-Type: application\/wasm/);
+    const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    const serviceWorker = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
+    expect(serviceWorker).toContain(`spektra-mobile-v${version}`);
+    expect(serviceWorker).not.toContain("ignoreSearch: true");
+    expect(serviceWorker).toContain("if (!response.ok && cached) return cached");
+    expect(readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8"))
+      .toContain("__APP_VERSION__");
+    const engineWorker = readFileSync(new URL("./engine-worker.ts", import.meta.url), "utf8");
+    expect(engineWorker).toContain("`/${directory}/${__APP_VERSION__}`");
+    expect(engineWorker).toContain("`${enginePath}/spektrafilm_web.js`");
+    expect(engineWorker).toContain("`${enginePath}/spektrafilm_web_bg.wasm`");
+    expect(engineWorker.indexOf("await loaded.default("))
+      .toBeLessThan(engineWorker.indexOf("engine = loaded"));
+    const assets = readFileSync(new URL("../scripts/copy-assets.mjs", import.meta.url), "utf8");
+    expect(assets).toContain('for (const directory of ["wasm", "wasm-threaded"])');
+    expect(assets).toContain("packageJson.version");
+    expect(assets).toContain("recursive: entry.isDirectory()");
+    expect(assets).toContain('...files(resolve("public/wasm"), "/wasm")');
+    expect(assets).toContain('...files(resolve("public/wasm-threaded"), "/wasm-threaded")');
+    expect(readFileSync(new URL("./main.ts", import.meta.url), "utf8"))
+      .toContain("`v${__APP_VERSION__}`");
+    const playwrightConfig = readFileSync(new URL("../playwright.config.ts", import.meta.url), "utf8");
+    expect(playwrightConfig).toContain("process.env.SPEKTRAFILM_E2E_BASE_URL");
+    const deploy = readFileSync(new URL("../scripts/deploy-cloudflare.sh", import.meta.url), "utf8");
+    expect(deploy).toContain("npm run release:verify");
+    expect(deploy).toContain("SPEKTRAFILM_E2E_BASE_URL=https://spektra-mobile.pages.dev");
+    expect(deploy).toContain("auto-rotates portrait DNG pixels and exports them once");
+    expect(deploy).toContain("renders a mobile DNG after switching print off and back on");
+  });
+});

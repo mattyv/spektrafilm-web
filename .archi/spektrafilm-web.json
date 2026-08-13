@@ -1,0 +1,1571 @@
+{
+  "version": 1,
+  "bundleId": "a45fd441-3045-4af3-8ec5-233222f3e29a",
+  "revision": {
+    "number": 4,
+    "updatedAt": "2026-08-12T03:30:00.000Z",
+    "summary": "Added a guided reading tour to all accepted proposal views"
+  },
+  "diagrams": [
+    {
+      "id": "proposed-on-device-architecture",
+      "name": "Proposed — On-Device Application",
+      "type": "architecture",
+      "origin": "llm",
+      "generation": {
+        "focus": "Target architecture for the full local-first Spektra Mobile PWA",
+        "customScenario": true
+      },
+      "doc": {
+        "type": "architecture",
+        "nodes": [
+          {
+            "id": "mobile-editor",
+            "label": "Mobile Editor",
+            "files": [
+              "web/index.html",
+              "web/src/main.ts",
+              "web/src/style.css"
+            ],
+            "group": "experience",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 3
+          },
+          {
+            "id": "batch-workspace",
+            "label": "Individual + Batch Workspace",
+            "files": [
+              "web/src/main.ts"
+            ],
+            "group": "experience",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 4
+          },
+          {
+            "id": "browser-adapter",
+            "label": "Browser Engine Adapter",
+            "files": [
+              "web/src/engine-worker.ts",
+              "crates/spektrafilm-web/src/lib.rs"
+            ],
+            "group": "browser-runtime",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 6
+          },
+          {
+            "id": "asset-cache",
+            "label": "Offline Profile + App Cache",
+            "files": [
+              "web/scripts/copy-assets.mjs"
+            ],
+            "group": "browser-runtime",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 7
+          },
+          {
+            "id": "recipe-store",
+            "label": "Local Recipes + History",
+            "files": [],
+            "group": "browser-runtime",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 5
+          },
+          {
+            "id": "temporary-results",
+            "label": "Temporary Separate Output Files",
+            "files": [],
+            "group": "browser-runtime",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 13
+          },
+          {
+            "id": "raw-development",
+            "label": "In-Memory RAW Development",
+            "files": [
+              "crates/spektrafilm-cli/src/main.rs",
+              "crates/spektrafilm-gui/src/main.rs"
+            ],
+            "group": "processing",
+            "change": "modified",
+            "x": 0,
+            "y": 0,
+            "step": 8
+          },
+          {
+            "id": "simulation-core",
+            "label": "Full Spectral Simulation",
+            "files": [
+              "crates/spektrafilm-core/src/pipeline.rs",
+              "crates/spektrafilm-core/src/profile.rs",
+              "crates/spektrafilm-core/src/spectral_service.rs"
+            ],
+            "group": "processing",
+            "change": "modified",
+            "x": 0,
+            "y": 0,
+            "step": 9
+          },
+          {
+            "id": "gpu-engine",
+            "label": "WebGPU Preview + Fast Export",
+            "files": [
+              "crates/spektrafilm-gpu/src/wgpu_backend.rs",
+              "crates/spektrafilm-gpu/src/lib.rs"
+            ],
+            "group": "processing",
+            "change": "modified",
+            "x": 0,
+            "y": 0,
+            "step": 10
+          },
+          {
+            "id": "reference-engine",
+            "label": "f64 Reference Export",
+            "files": [
+              "crates/spektrafilm-gpu/src/cpu_backend.rs",
+              "crates/spektrafilm-math/src/precision.rs"
+            ],
+            "group": "processing",
+            "change": "modified",
+            "x": 0,
+            "y": 0,
+            "step": 11
+          },
+          {
+            "id": "output-encoder",
+            "label": "JPEG + PNG + 16-bit TIFF Encoder",
+            "files": [
+              "crates/spektrafilm-cli/src/main.rs",
+              "crates/spektrafilm-web/src/lib.rs"
+            ],
+            "group": "processing",
+            "change": "modified",
+            "x": 0,
+            "y": 0,
+            "step": 12
+          },
+          {
+            "id": "service-worker",
+            "label": "Install + Offline Runtime",
+            "files": [
+              "web/public/sw.js"
+            ],
+            "group": "delivery",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 2
+          },
+          {
+            "id": "cloudflare-pages",
+            "label": "Cloudflare Pages",
+            "files": [
+              "web/public/_headers"
+            ],
+            "group": "delivery",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 1
+          }
+        ],
+        "edges": [
+          {
+            "from": "cloudflare-pages",
+            "to": "service-worker",
+            "label": "serves secure static app",
+            "change": "added"
+          },
+          {
+            "from": "service-worker",
+            "to": "mobile-editor",
+            "label": "installs and runs offline",
+            "change": "added"
+          },
+          {
+            "from": "mobile-editor",
+            "to": "batch-workspace",
+            "label": "edits one or queues many",
+            "change": "added"
+          },
+          {
+            "from": "mobile-editor",
+            "to": "browser-adapter",
+            "label": "sends typed commands",
+            "change": "added"
+          },
+          {
+            "from": "batch-workspace",
+            "to": "browser-adapter",
+            "label": "submits sequential jobs",
+            "change": "added"
+          },
+          {
+            "from": "recipe-store",
+            "to": "mobile-editor",
+            "label": "restores local adjustments",
+            "change": "added"
+          },
+          {
+            "from": "asset-cache",
+            "to": "simulation-core",
+            "label": "provides authoritative profiles",
+            "change": "added"
+          },
+          {
+            "from": "browser-adapter",
+            "to": "raw-development",
+            "label": "passes file bytes",
+            "change": "modified"
+          },
+          {
+            "from": "raw-development",
+            "to": "simulation-core",
+            "label": "linear image"
+          },
+          {
+            "from": "browser-adapter",
+            "to": "simulation-core",
+            "label": "applies settings",
+            "change": "added"
+          },
+          {
+            "from": "simulation-core",
+            "to": "gpu-engine",
+            "label": "fast mode"
+          },
+          {
+            "from": "simulation-core",
+            "to": "reference-engine",
+            "label": "reference mode"
+          },
+          {
+            "from": "gpu-engine",
+            "to": "output-encoder",
+            "label": "f32 pixels",
+            "change": "modified"
+          },
+          {
+            "from": "reference-engine",
+            "to": "output-encoder",
+            "label": "f64-derived pixels",
+            "change": "modified"
+          },
+          {
+            "from": "output-encoder",
+            "to": "temporary-results",
+            "label": "writes one local result",
+            "change": "added"
+          },
+          {
+            "from": "temporary-results",
+            "to": "browser-adapter",
+            "label": "returns file handles",
+            "change": "added"
+          }
+        ],
+        "groups": [
+          {
+            "id": "experience",
+            "label": "Editing Experience"
+          },
+          {
+            "id": "browser-runtime",
+            "label": "Local Browser Runtime"
+          },
+          {
+            "id": "processing",
+            "label": "Processing Engine"
+          },
+          {
+            "id": "delivery",
+            "label": "Static Delivery"
+          }
+        ],
+        "comments": {
+          "__diagram__": [
+            {
+              "id": "note-proposed-architecture",
+              "text": "Proposed design only; this is not current application behaviour. Follow the numbered stops from static delivery through the local editor, reused processing engine, and separate on-device results. Photos and processing remain on the user's device.",
+              "ts": 1786502850000
+            }
+          ],
+          "cloudflare-pages": [
+            {
+              "id": "8ab044349e5b6fea",
+              "text": "The static host delivers the proposed app over a secure connection. It serves files only; photos are never sent to it for processing.",
+              "ts": 1786503739356
+            }
+          ],
+          "service-worker": [
+            {
+              "id": "2fb0dbdba44cf962",
+              "text": "The proposed offline layer installs the app and its required assets after the first complete load. Later sessions can start without a network connection.",
+              "ts": 1786503739457
+            }
+          ],
+          "mobile-editor": [
+            {
+              "id": "657494a948ffcca9",
+              "text": "The proposed editor is the main touch-friendly workspace. It shows a reduced live preview while keeping advanced film, print, scan, colour, and RAW controls available.",
+              "ts": 1786503739554
+            }
+          ],
+          "batch-workspace": [
+            {
+              "id": "f426cb9046e487fa",
+              "text": "The proposed workspace handles either one photo or a queue. Batch jobs run one at a time, share a recipe by default, and may override settings per photo.",
+              "ts": 1786503739651
+            }
+          ],
+          "recipe-store": [
+            {
+              "id": "1f22d36443536408",
+              "text": "The proposed local store keeps recipes and edit history on the device. Source photos are not persisted, and recipes can be imported or exported.",
+              "ts": 1786503739750
+            }
+          ],
+          "browser-adapter": [
+            {
+              "id": "0ad3dcc04965ca1e",
+              "text": "The proposed adapter is the narrow boundary between the interface and Rust processing engine. It accepts file bytes and immutable settings, then reports progress and results without exposing engine internals to the interface.",
+              "ts": 1786503739847
+            }
+          ],
+          "asset-cache": [
+            {
+              "id": "9b05f50c79e434b8",
+              "text": "The proposed cache supplies the profiles and spectral data required by the real simulation. These assets become available offline after the first complete installation.",
+              "ts": 1786503739944
+            }
+          ],
+          "raw-development": [
+            {
+              "id": "44065f8b7abd49e6",
+              "text": "RAW development converts camera data into a linear scene image before film simulation. The existing desktop paths already perform this work, but the browser version must accept in-memory file data and preserve camera metadata.",
+              "ts": 1786503740041
+            }
+          ],
+          "simulation-core": [
+            {
+              "id": "bc7e890b5b3f3603",
+              "text": "The existing core owns the calibrated film, print, and scan pipeline. The proposal reuses that physical simulation rather than replacing it with a baked colour lookup.",
+              "ts": 1786503740138
+            }
+          ],
+          "gpu-engine": [
+            {
+              "id": "4e5fccef95aa8334",
+              "text": "The existing GPU path already runs the complete processing chain in one resident sequence. The browser adaptation will tile work to portable WebGPU limits and reuse buffers so iPhones do not exhaust memory.",
+              "ts": 1786503740235
+            }
+          ],
+          "reference-engine": [
+            {
+              "id": "408598a22fe72cd5",
+              "text": "Reference mode retains the higher-precision CPU result as the quality-first export choice. Browser work must replace its native-only threading and numerical dependencies while preserving measured output parity.",
+              "ts": 1786503740341
+            }
+          ],
+          "output-encoder": [
+            {
+              "id": "f74cdcf8ed0e308f",
+              "text": "The existing command-line app can write JPEG, PNG, and TIFF. The browser boundary will return encoded data while preserving all available metadata, including GPS, rather than writing directly to native file paths.",
+              "ts": 1786503740439
+            }
+          ],
+          "temporary-results": [
+            {
+              "id": "be519683b1213633",
+              "text": "The proposed temporary store writes each finished image separately to device-backed browser storage. This avoids holding a whole batch in memory; items are removed after save, discard, or session cleanup.",
+              "ts": 1786503740538
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "proposed-photo-dataflow",
+      "name": "Proposed — Photo Processing Journey",
+      "type": "dataflow",
+      "origin": "llm",
+      "generation": {
+        "focus": "Local photo data flow from browser input through full-quality processing to separate output files",
+        "customScenario": true
+      },
+      "doc": {
+        "type": "dataflow",
+        "nodes": [
+          {
+            "id": "photo-input",
+            "label": "RAW / JPEG / PNG / TIFF Files",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 1
+          },
+          {
+            "id": "batch-queue",
+            "label": "Individual or Sequential Batch Queue",
+            "files": [
+              "web/src/main.ts"
+            ],
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 2
+          },
+          {
+            "id": "decode-input",
+            "label": "Decode + RAW Development",
+            "files": [
+              "crates/spektrafilm-cli/src/main.rs",
+              "crates/spektrafilm-gui/src/main.rs",
+              "crates/spektrafilm-web/src/lib.rs",
+              "vendor/rawler/src/imgop/sensor/bayer/ppg.rs",
+              "vendor/rawler/src/imgop/sensor/xtrans/xtrans_fast.rs",
+              "vendor/rawler/src/decompressors/crx/decoder.rs"
+            ],
+            "change": "modified",
+            "x": 0,
+            "y": 0,
+            "step": 3
+          },
+          {
+            "id": "linear-image",
+            "label": "Linear Scene Image",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 4
+          },
+          {
+            "id": "settings-profiles",
+            "label": "Settings + Spectral Profiles",
+            "files": [
+              "crates/spektrafilm-core/src/params.rs",
+              "crates/spektrafilm-core/src/profile.rs",
+              "crates/spektrafilm-core/src/neutral_filters.rs",
+              "crates/spektrafilm-core/src/spectral_service.rs",
+              "crates/spektrafilm-core/src/pipeline.rs",
+              "crates/spektrafilm-web/src/lib.rs",
+              "web/scripts/copy-assets.mjs"
+            ],
+            "change": "modified",
+            "x": 0,
+            "y": 0,
+            "step": 5
+          },
+          {
+            "id": "full-pipeline",
+            "label": "Complete Film → Print → Scan Pipeline",
+            "files": [
+              "crates/spektrafilm-core/src/pipeline.rs"
+            ],
+            "change": "modified",
+            "x": 0,
+            "y": 0,
+            "step": 6
+          },
+          {
+            "id": "fast-processing",
+            "label": "WebGPU Preview / Fast Export",
+            "files": [
+              "crates/spektrafilm-gpu/src/wgpu_backend.rs",
+              "crates/spektrafilm-web/src/lib.rs",
+              "crates/spektrafilm-core/src/pipeline.rs"
+            ],
+            "change": "modified",
+            "x": 0,
+            "y": 0,
+            "step": 7
+          },
+          {
+            "id": "reference-processing",
+            "label": "f64 Reference Export",
+            "files": [
+              "crates/spektrafilm-gpu/src/cpu_backend.rs",
+              "crates/spektrafilm-web/src/lib.rs",
+              "web/src/engine-worker.ts",
+              "crates/spektrafilm-core/src/pipeline.rs",
+              "crates/spektrafilm-core/src/stages/filming.rs",
+              "crates/spektrafilm-model/src/grain.rs"
+            ],
+            "change": "modified",
+            "x": 0,
+            "y": 0,
+            "step": 8
+          },
+          {
+            "id": "encode-output",
+            "label": "Encode Selected Format",
+            "files": [
+              "crates/spektrafilm-cli/src/main.rs",
+              "crates/spektrafilm-web/src/lib.rs"
+            ],
+            "change": "modified",
+            "x": 0,
+            "y": 0,
+            "step": 9
+          },
+          {
+            "id": "separate-results",
+            "label": "Separate Result Files",
+            "files": [
+              "web/src/main.ts"
+            ],
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 11
+          },
+          {
+            "id": "temporary-result-store",
+            "label": "Temporary On-Device Result Storage",
+            "files": [],
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 10
+          },
+          {
+            "id": "save-share",
+            "label": "Save / Share",
+            "files": [],
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 12
+          }
+        ],
+        "edges": [
+          {
+            "from": "photo-input",
+            "to": "batch-queue",
+            "label": "selected file handles",
+            "change": "added"
+          },
+          {
+            "from": "batch-queue",
+            "to": "decode-input",
+            "label": "one file at a time",
+            "change": "added"
+          },
+          {
+            "from": "decode-input",
+            "to": "linear-image",
+            "label": "developed pixels"
+          },
+          {
+            "from": "linear-image",
+            "to": "full-pipeline",
+            "label": "scene-referred image"
+          },
+          {
+            "from": "settings-profiles",
+            "to": "full-pipeline",
+            "label": "complete simulation configuration"
+          },
+          {
+            "from": "full-pipeline",
+            "to": "fast-processing",
+            "label": "Fast GPU"
+          },
+          {
+            "from": "full-pipeline",
+            "to": "reference-processing",
+            "label": "Reference Quality"
+          },
+          {
+            "from": "fast-processing",
+            "to": "encode-output",
+            "label": "f32 result",
+            "change": "modified"
+          },
+          {
+            "from": "reference-processing",
+            "to": "encode-output",
+            "label": "reference result",
+            "change": "modified"
+          },
+          {
+            "from": "encode-output",
+            "to": "temporary-result-store",
+            "label": "writes JPEG / PNG / TIFF",
+            "change": "added"
+          },
+          {
+            "from": "temporary-result-store",
+            "to": "separate-results",
+            "label": "individual file handles",
+            "change": "added"
+          },
+          {
+            "from": "separate-results",
+            "to": "save-share",
+            "label": "individual files",
+            "change": "added"
+          },
+          {
+            "from": "save-share",
+            "to": "batch-queue",
+            "label": "advance after completion",
+            "change": "added"
+          }
+        ],
+        "groups": [
+          {
+            "id": "input-stage",
+            "label": "Input"
+          },
+          {
+            "id": "simulation-stage",
+            "label": "Simulation"
+          },
+          {
+            "id": "output-stage",
+            "label": "Output"
+          }
+        ],
+        "comments": {
+          "__diagram__": [
+            {
+              "id": "note-proposed-dataflow",
+              "text": "Proposed design only; this is not current application behaviour. Follow the numbered stops to trace one photo from local selection through decode, simulation, encoding, and save. No photo data crosses a network boundary.",
+              "ts": 1786502850000
+            }
+          ],
+          "photo-input": [
+            {
+              "id": "112e12760e599a3e",
+              "text": "A user selects RAW, JPEG, PNG, or TIFF files from the device. The proposed browser boundary reads them locally and retains their metadata for the eventual output.",
+              "ts": 1786503756303
+            }
+          ],
+          "batch-queue": [
+            {
+              "id": "0c821fa4e2c8f1a2",
+              "text": "One selected photo enters immediately, while multiple photos form a sequential queue. The queue applies a shared recipe unless an item has an explicit override.",
+              "ts": 1786503756400
+            }
+          ],
+          "decode-input": [
+            {
+              "id": "f0440c4124aec9c5",
+              "text": "Input decoding produces pixels the simulation can use. RAW files additionally receive camera white balance and automatic lens correction by default, with user controls available.",
+              "ts": 1786503756499
+            }
+          ],
+          "linear-image": [
+            {
+              "id": "cdf6238845b4aa43",
+              "text": "The decoded result is a linear scene image: pixel values represent captured light before the film look is applied. This is the handoff point into the physical simulation.",
+              "ts": 1786503756604
+            }
+          ],
+          "settings-profiles": [
+            {
+              "id": "02b1909075b3b7af",
+              "text": "The chosen recipe and calibrated spectral profiles define the simulation. They are shared between preview and export so changing quality mode does not silently change the creative settings.",
+              "ts": 1786503756717
+            }
+          ],
+          "full-pipeline": [
+            {
+              "id": "8d16817a317ec3f8",
+              "text": "The existing pipeline simulates film exposure, print, and scanning as a complete chain. It remains the single source of image behavior for both processing modes.",
+              "ts": 1786503756816
+            }
+          ],
+          "fast-processing": [
+            {
+              "id": "3799b5869a70a1ff",
+              "text": "Fast mode uses tiled WebGPU processing for live previews and optional exports. A device preflight checks memory and portable buffer limits before allocating work.",
+              "ts": 1786503756920
+            }
+          ],
+          "reference-processing": [
+            {
+              "id": "09525c8fdfc49db0",
+              "text": "Reference mode uses higher-precision processing for the default final export. If the device cannot safely handle the image, the app offers an explicit resize before work begins.",
+              "ts": 1786503757019
+            }
+          ],
+          "encode-output": [
+            {
+              "id": "3fe8d1f7db7eeb25",
+              "text": "The finished pixels are encoded as JPEG, PNG, or 16-bit TIFF. JPEG and PNG default to sRGB, advanced colour choices remain available, and all recoverable source metadata is copied.",
+              "ts": 1786503757118
+            }
+          ],
+          "temporary-result-store": [
+            {
+              "id": "ae22f641b07a4147",
+              "text": "Each encoded image is written to temporary on-device storage instead of remaining in memory. This makes long batches bounded by one active photo rather than the total queue size.",
+              "ts": 1786503757243
+            }
+          ],
+          "separate-results": [
+            {
+              "id": "36f9d2fa256e5218",
+              "text": "Every batch item remains an individual output file. The app does not create a ZIP archive.",
+              "ts": 1786503757340
+            }
+          ],
+          "save-share": [
+            {
+              "id": "a79a815569c881dc",
+              "text": "The user saves or shares each completed file through the browser and operating system. Temporary copies are cleaned up after they are no longer needed.",
+              "ts": 1786503757437
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "proposed-runtime-concurrency",
+      "name": "Proposed — Browser Job Ownership",
+      "type": "concurrency",
+      "origin": "llm",
+      "generation": {
+        "focus": "Thread and resource ownership for previews, exports, cancellation, and sequential batches",
+        "customScenario": true
+      },
+      "doc": {
+        "type": "concurrency",
+        "nodes": [
+          {
+            "id": "ui-loop",
+            "label": "Responsive Editor",
+            "files": [],
+            "group": "main-browser",
+            "kind": "loop",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 1
+          },
+          {
+            "id": "command-channel",
+            "label": "Immutable Job Commands",
+            "files": [],
+            "group": "main-browser",
+            "kind": "resource",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 2
+          },
+          {
+            "id": "engine-worker",
+            "label": "Single Engine Owner",
+            "files": [],
+            "group": "engine-runtime",
+            "kind": "thread",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 3
+          },
+          {
+            "id": "preview-scheduler",
+            "label": "Latest Preview Wins",
+            "files": [
+              "web/src/engine-worker.ts"
+            ],
+            "group": "engine-runtime",
+            "kind": "loop",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 4
+          },
+          {
+            "id": "batch-scheduler",
+            "label": "One Photo at a Time",
+            "files": [
+              "web/src/main.ts"
+            ],
+            "group": "engine-runtime",
+            "kind": "loop",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 5
+          },
+          {
+            "id": "cancel-signal",
+            "label": "Cooperative Cancellation",
+            "files": [],
+            "group": "engine-runtime",
+            "kind": "resource",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 7
+          },
+          {
+            "id": "gpu-device",
+            "label": "Owned WebGPU Device + Buffers",
+            "files": [
+              "crates/spektrafilm-gpu/src/wgpu_backend.rs"
+            ],
+            "group": "gpu-runtime",
+            "kind": "resource",
+            "change": "modified",
+            "x": 0,
+            "y": 0,
+            "step": 8
+          },
+          {
+            "id": "reference-pool",
+            "label": "Bounded f64 Export Pool",
+            "files": [
+              "crates/spektrafilm-gpu/src/cpu_backend.rs",
+              "crates/spektrafilm-web/src/lib.rs"
+            ],
+            "group": "reference-runtime",
+            "kind": "pool",
+            "parallel": true,
+            "change": "modified",
+            "x": 0,
+            "y": 0,
+            "step": 9
+          },
+          {
+            "id": "export-snapshot",
+            "label": "Immutable Export Snapshot",
+            "files": [
+              "web/src/engine-worker.ts"
+            ],
+            "group": "reference-runtime",
+            "kind": "resource",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 6
+          },
+          {
+            "id": "result-channel",
+            "label": "Progress + Separate Results",
+            "files": [
+              "web/src/main.ts"
+            ],
+            "group": "main-browser",
+            "kind": "resource",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 11
+          },
+          {
+            "id": "temporary-output-store",
+            "label": "Disk-Backed Temporary Outputs",
+            "files": [],
+            "group": "engine-runtime",
+            "kind": "resource",
+            "change": "added",
+            "x": 0,
+            "y": 0,
+            "step": 10
+          }
+        ],
+        "edges": [
+          {
+            "from": "ui-loop",
+            "to": "command-channel",
+            "label": "posts commands",
+            "change": "added"
+          },
+          {
+            "from": "command-channel",
+            "to": "engine-worker",
+            "label": "message passing only",
+            "change": "added"
+          },
+          {
+            "from": "engine-worker",
+            "to": "preview-scheduler",
+            "label": "coalesces stale previews",
+            "change": "added"
+          },
+          {
+            "from": "engine-worker",
+            "to": "batch-scheduler",
+            "label": "owns queue state",
+            "change": "added"
+          },
+          {
+            "from": "preview-scheduler",
+            "to": "gpu-device",
+            "label": "submits one preview",
+            "change": "added"
+          },
+          {
+            "from": "batch-scheduler",
+            "to": "gpu-device",
+            "label": "Fast GPU job",
+            "change": "added"
+          },
+          {
+            "from": "batch-scheduler",
+            "to": "export-snapshot",
+            "label": "freezes one photo + recipe",
+            "change": "added"
+          },
+          {
+            "from": "export-snapshot",
+            "to": "reference-pool",
+            "label": "Reference Quality job",
+            "change": "added"
+          },
+          {
+            "from": "cancel-signal",
+            "to": "engine-worker",
+            "label": "checked between stages",
+            "change": "added"
+          },
+          {
+            "from": "cancel-signal",
+            "to": "reference-pool",
+            "label": "checked between work units",
+            "change": "added"
+          },
+          {
+            "from": "gpu-device",
+            "to": "temporary-output-store",
+            "label": "writes completed fast export",
+            "change": "added"
+          },
+          {
+            "from": "reference-pool",
+            "to": "temporary-output-store",
+            "label": "writes completed reference export",
+            "change": "added"
+          },
+          {
+            "from": "temporary-output-store",
+            "to": "result-channel",
+            "label": "passes progress + file handles",
+            "change": "added"
+          },
+          {
+            "from": "result-channel",
+            "to": "ui-loop",
+            "label": "progress and files",
+            "change": "added"
+          }
+        ],
+        "groups": [
+          {
+            "id": "main-browser",
+            "label": "Browser Main Thread"
+          },
+          {
+            "id": "engine-runtime",
+            "label": "Processing Worker"
+          },
+          {
+            "id": "gpu-runtime",
+            "label": "WebGPU Queue"
+          },
+          {
+            "id": "reference-runtime",
+            "label": "Reference Export Workers"
+          }
+        ],
+        "comments": {
+          "__diagram__": [
+            {
+              "id": "note-proposed-concurrency",
+              "text": "Proposed design only; this is not current application behaviour. Follow the numbered stops from the responsive editor into the single engine owner and back through bounded results. Batches run sequentially and communication uses immutable messages.",
+              "ts": 1786502850000
+            }
+          ],
+          "ui-loop": [
+            {
+              "id": "cd92710b7f3aa84f",
+              "text": "The main browser thread owns the visible editor and remains responsive. It sends immutable work requests instead of performing image processing itself.",
+              "ts": 1786503772791
+            }
+          ],
+          "command-channel": [
+            {
+              "id": "4da824996f71d819",
+              "text": "The proposed command boundary carries complete snapshots of files, settings, quality mode, and intent. A worker never observes half-applied interface changes.",
+              "ts": 1786503772900
+            }
+          ],
+          "engine-worker": [
+            {
+              "id": "a194a9a01b7377a2",
+              "text": "One worker owns the processing engine and coordinates all heavy work. Single ownership avoids duplicate profile state and unsafe competition for limited mobile memory.",
+              "ts": 1786503772998
+            }
+          ],
+          "preview-scheduler": [
+            {
+              "id": "ee403b66a8563a3e",
+              "text": "Preview scheduling keeps only the newest requested view. Superseded previews are cancelled or discarded so rapid slider movement does not create a backlog.",
+              "ts": 1786503773105
+            }
+          ],
+          "batch-scheduler": [
+            {
+              "id": "cbb454ac990b3404",
+              "text": "Batch scheduling admits one photo at a time. This is the central memory bound and keeps batch size from multiplying active image buffers.",
+              "ts": 1786503773242
+            }
+          ],
+          "export-snapshot": [
+            {
+              "id": "7bbc9d34ff894ba8",
+              "text": "An export captures an immutable recipe and input snapshot when it starts. Later edits affect future jobs, not the file already being rendered.",
+              "ts": 1786503773349
+            }
+          ],
+          "cancel-signal": [
+            {
+              "id": "3b4a10459f8c17b2",
+              "text": "Cancellation is cooperative: processing checks a shared signal at safe stage or tile boundaries. This allows previews and exports to stop without leaving partially owned buffers or files.",
+              "ts": 1786503773448
+            }
+          ],
+          "gpu-device": [
+            {
+              "id": "92d04d233fb53385",
+              "text": "The engine worker owns the WebGPU device, queue, and reusable buffers. Work is tiled to portable limits, uses workgroups no larger than 256, and submits bounded batches to avoid known iOS pressure points.",
+              "ts": 1786503773550
+            }
+          ],
+          "reference-pool": [
+            {
+              "id": "133c93c3751e90fa",
+              "text": "Reference export uses a bounded pool rather than unrestricted browser threads. Its size follows the conservative device memory budget and can fall back to one worker.",
+              "ts": 1786503773652
+            }
+          ],
+          "temporary-output-store": [
+            {
+              "id": "b0d70bd76239a0be",
+              "text": "Completed encodes spill to temporary origin-private storage. The worker passes lightweight file handles onward and releases large pixel buffers immediately.",
+              "ts": 1786503773772
+            }
+          ],
+          "result-channel": [
+            {
+              "id": "81b2f904d16c4a69",
+              "text": "The result channel reports estimates, progress, cancellation, errors, and one separate file result at a time. The interface never needs to retain every finished batch image in memory.",
+              "ts": 1786503773876
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "activeId": "proposed-on-device-architecture",
+  "codeThreads": [],
+  "designs": [
+    {
+      "id": "browser-processing-engine",
+      "name": "Full browser processing engine",
+      "goal": "Run the complete Spektrafilm RAW-to-output pipeline locally in a WebGPU browser with selectable fast GPU and f64 reference exports.",
+      "status": "implementing",
+      "diagramIds": [
+        "proposed-photo-dataflow",
+        "proposed-runtime-concurrency"
+      ],
+      "nonGoals": [
+        "Running photo processing on a server",
+        "Providing a WebGL or legacy-browser fallback",
+        "Making the f32 GPU result bit-identical to the f64 reference",
+        "Replacing the physical pipeline with baked film-look LUTs"
+      ],
+      "constraints": [
+        "All photo bytes, decoded pixels, recipes, and outputs remain on the user's device",
+        "WebGPU is required and unsupported browsers fail clearly",
+        "Reference Quality remains f64 CPU processing because WGSL does not provide f64",
+        "Every existing simulation capability remains available in both processing modes",
+        "The browser boundary parses untrusted files and settings once before the processing core uses them",
+        "Third-party decoders and browser APIs remain behind narrow adapter boundaries",
+        "One processing worker owns mutable engine state; batches process one photo at a time",
+        "The browser engine targets at most 768 MiB estimated peak memory on iPhone until physical-device evidence supports a different budget",
+        "No WebGPU storage binding may assume more than the portable 128 MiB limit, and compute workgroups may not assume more than 256 invocations",
+        "A 4 GB WebAssembly address space is not treated as an allocatable iPhone memory budget",
+        "Completed batch results spill to temporary on-device storage instead of accumulating in memory",
+        "The existing profile data remains the single authoritative representation and browser assets derive from it",
+        "The GPL-3.0 lineage and upstream projects remain credited"
+      ],
+      "decisions": [
+        {
+          "id": "rust-web-adapter",
+          "text": "Add a Rust-to-browser adapter around the existing processing crates and keep the web interface thin",
+          "rationale": "This preserves the tested engine and prevents browser concerns from entering the physical model"
+        },
+        {
+          "id": "dual-export",
+          "text": "Expose Fast GPU and Reference Quality as explicit selectable modes",
+          "rationale": "Users can choose speed or reference precision without hidden quality changes"
+        },
+        {
+          "id": "single-owner",
+          "text": "Confine mutable processing state and the WebGPU device to one browser worker",
+          "rationale": "Message passing keeps the editor responsive and makes job ordering, cancellation, and memory ownership explicit"
+        },
+        {
+          "id": "bounded-reference-pool",
+          "text": "Use a bounded local worker pool for f64 exports and pause competing image processing while it runs",
+          "rationale": "Reference exports need parallel CPU work, while avoiding concurrent full-image jobs protects mobile memory"
+        },
+        {
+          "id": "in-memory-assets",
+          "text": "Load generated browser profile assets through an in-memory provider",
+          "rationale": "Browser builds cannot use native paths, and deriving assets from the existing data avoids configuration drift"
+        },
+        {
+          "id": "explicit-device-limit",
+          "text": "Preflight memory and device limits and require consent before reducing output dimensions",
+          "rationale": "A clear refusal or user-approved resize is safer than crashes or silent quality loss"
+        },
+        {
+          "id": "iphone-memory-budget",
+          "text": "Use a conservative 768 MiB estimated engine budget on iPhone and free each stage's buffers as soon as possible",
+          "rationale": "WebKit documents an approximately 1.5 GB soft process limit that varies with device pressure, so the engine needs substantial headroom for the browser and decoder"
+        },
+        {
+          "id": "portable-gpu-chunks",
+          "text": "Split full-resolution GPU work into bounded chunks and use workgroups no larger than the portable WebGPU limits",
+          "rationale": "A 12 MP RGB f32 buffer already exceeds the portable 128 MiB storage-binding limit, and the current 1024-thread shaders exceed the portable 256-invocation limit"
+        },
+        {
+          "id": "paced-ios-submissions",
+          "text": "Submit bounded groups of GPU commands and periodically await completion on iOS",
+          "rationale": "Current WebKit evidence reports stalled or failed long compute submission chains on iOS, so bounded pacing limits in-flight work and memory"
+        },
+        {
+          "id": "temporary-batch-results",
+          "text": "Write completed batch outputs to temporary origin-private storage and pass lightweight file handles to the editor",
+          "rationale": "Separate full-resolution results remain available without keeping every encoded file in process memory"
+        },
+        {
+          "id": "preserve-metadata",
+          "text": "Preserve all available source metadata, including location, when the selected output format supports it",
+          "rationale": "Exports retain the complete photographic record instead of silently discarding source information"
+        },
+        {
+          "id": "srgb-default",
+          "text": "Default JPEG and PNG exports to sRGB while keeping the full output-colour controls available under Advanced",
+          "rationale": "Ordinary phone sharing remains predictable without removing specialist colour workflows"
+        }
+      ],
+      "assumptions": [
+        "Current WebGPU mobile browsers support the required secure worker APIs",
+        "Cross-origin isolation permits local f64 worker threads on supported devices"
+      ],
+      "openQuestions": [
+        "Can the current RAW decoder compile for the browser while preserving its existing development output?",
+        "What reference-export resolution is reliable on representative iOS and Android devices?"
+      ],
+      "acceptanceCriteria": [
+        {
+          "id": "wasm-build",
+          "text": "The browser engine and all reused processing crates compile for WebAssembly",
+          "method": {
+            "kind": "command",
+            "executable": "cargo",
+            "args": [
+              "check",
+              "--target",
+              "wasm32-unknown-unknown",
+              "-p",
+              "spektrafilm-web"
+            ]
+          }
+        },
+        {
+          "id": "browser-full-pipeline",
+          "text": "Browser tests decode a fixture and exercise the complete pipeline in Fast GPU and Reference Quality modes",
+          "method": {
+            "kind": "command",
+            "executable": "wasm-pack",
+            "args": [
+              "test",
+              "--headless",
+              "--chrome",
+              "crates/spektrafilm-web"
+            ]
+          }
+        },
+        {
+          "id": "reference-parity",
+          "text": "Reference Quality browser fixtures stay within the native f64 regression tolerance for the full effects pipeline",
+          "method": {
+            "kind": "command",
+            "executable": "wasm-pack",
+            "args": [
+              "test",
+              "--headless",
+              "--chrome",
+              "crates/spektrafilm-web",
+              "--",
+              "reference_full_pipeline_parity"
+            ]
+          }
+        },
+        {
+          "id": "native-regression",
+          "text": "The existing native Rust processing tests continue to pass",
+          "method": {
+            "kind": "command",
+            "executable": "cargo",
+            "args": [
+              "test",
+              "--workspace"
+            ]
+          }
+        },
+        {
+          "id": "boundary-review",
+          "text": "Browser APIs and third-party decoding remain outside the physical simulation core, and every mutable runtime resource has one documented owner",
+          "method": {
+            "kind": "claude"
+          }
+        },
+        {
+          "id": "physical-device-engine",
+          "text": "Representative 12 MP and 24 MP RAW files either complete preview and both export modes without a page reload or are refused before allocation with an explicit user-approved resize on current iOS Safari and Android Chrome devices",
+          "method": {
+            "kind": "manual"
+          }
+        },
+        {
+          "id": "portable-limit-tests",
+          "text": "Browser tests exercise a 128 MiB storage-binding limit, 256-invocation workgroup limit, 768 MiB iPhone memory budget, and temporary batch-result spilling",
+          "method": {
+            "kind": "command",
+            "executable": "wasm-pack",
+            "args": [
+              "test",
+              "--headless",
+              "--chrome",
+              "crates/spektrafilm-web",
+              "--",
+              "portable_device_limits"
+            ]
+          }
+        }
+      ],
+      "verifications": [],
+      "plan": [
+        {
+          "id": "engine-step-1",
+          "text": "Create the browser boundary for byte-based input, derived profile assets, settings, and encoded output bytes",
+          "nodeIds": [
+            "decode-input",
+            "settings-profiles",
+            "encode-output"
+          ],
+          "criterionIds": [
+            "wasm-build",
+            "boundary-review"
+          ]
+        },
+        {
+          "id": "engine-step-2",
+          "text": "Make the complete WebGPU path asynchronous, mobile-limit compatible, and independently cancellable",
+          "nodeIds": [
+            "fast-processing",
+            "gpu-device",
+            "preview-scheduler",
+            "cancel-signal"
+          ],
+          "criterionIds": [
+            "browser-full-pipeline",
+            "portable-limit-tests",
+            "physical-device-engine"
+          ]
+        },
+        {
+          "id": "engine-step-3",
+          "text": "Run the f64 reference path locally with bounded parallelism and explicit memory preflight",
+          "nodeIds": [
+            "reference-processing",
+            "reference-pool",
+            "export-snapshot"
+          ],
+          "criterionIds": [
+            "reference-parity",
+            "physical-device-engine"
+          ]
+        },
+        {
+          "id": "engine-step-4",
+          "text": "Integrate sequential batch jobs, progress, cancellation, and separate result files",
+          "nodeIds": [
+            "batch-queue",
+            "batch-scheduler",
+            "result-channel",
+            "separate-results"
+          ],
+          "criterionIds": [
+            "browser-full-pipeline",
+            "portable-limit-tests",
+            "physical-device-engine"
+          ]
+        },
+        {
+          "id": "engine-step-5",
+          "text": "Lock browser and native regression coverage before exposing the engine to the full editor",
+          "nodeIds": [
+            "full-pipeline"
+          ],
+          "criterionIds": [
+            "reference-parity",
+            "native-regression",
+            "boundary-review"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mobile-editor-pwa",
+      "name": "Complete mobile editor and PWA",
+      "goal": "Deliver an installable, offline-capable mobile editor for individual and batch photos that exposes every simulation capability and saves separate local files.",
+      "status": "implementing",
+      "diagramIds": [
+        "proposed-on-device-architecture"
+      ],
+      "nonGoals": [
+        "User accounts or cloud synchronization",
+        "Uploading photos for processing",
+        "Bundling batch results into ZIP archives",
+        "Supporting browsers without WebGPU",
+        "Persisting source photos after the editing session"
+      ],
+      "constraints": [
+        "The interface remains usable on current phone-sized screens and larger browsers",
+        "Every simulation control is reachable without presenting every advanced control at once",
+        "Batches process sequentially and retain separate result files",
+        "Batch outputs use temporary on-device storage and are removed after save, discard, or session cleanup",
+        "Quality reduction always requires explicit user approval",
+        "The installed app works offline after its first complete load",
+        "Recipes and adjustment history remain local and can be exported or imported",
+        "The interface provides keyboard, touch, contrast, and screen-reader accessibility basics",
+        "Spektrafilm and spektrafilm-rs receive visible attribution"
+      ],
+      "decisions": [
+        {
+          "id": "mobile-first-workspace",
+          "text": "Use a large preview, collapsible controls drawer, and batch queue strip, adapting to a side panel on larger screens",
+          "rationale": "The image remains primary on phones while desktop space improves control access"
+        },
+        {
+          "id": "progressive-controls",
+          "text": "Organize controls by photographic stage and reveal specialist settings under Advanced",
+          "rationale": "All capabilities stay available without overwhelming the common workflow"
+        },
+        {
+          "id": "live-preview",
+          "text": "Update a reduced-size preview continuously and process full resolution only on export",
+          "rationale": "Editing remains responsive while exports preserve selected quality"
+        },
+        {
+          "id": "batch-and-individual",
+          "text": "Support individual edits and sequential batches with a shared recipe plus optional per-photo overrides",
+          "rationale": "The workflow handles repeated conversions without loading several full-resolution photos simultaneously"
+        },
+        {
+          "id": "separate-files",
+          "text": "Keep batch outputs as separate files with per-result Save and Share actions",
+          "rationale": "Users retain ordinary image files and avoid archive extraction on mobile"
+        },
+        {
+          "id": "explicit-export-mode",
+          "text": "Default to Reference Quality while keeping Fast GPU selectable and clearly labelled",
+          "rationale": "The default honours quality while users can deliberately trade precision for speed"
+        },
+        {
+          "id": "local-pwa",
+          "text": "Install and cache the application for offline use without accounts, photo uploads, or server processing",
+          "rationale": "This preserves privacy and avoids operating two processing implementations"
+        },
+        {
+          "id": "safe-long-jobs",
+          "text": "Show estimates and progress, support cancellation, and request screen-awake behavior during long exports",
+          "rationale": "Long local exports remain understandable and recoverable on mobile"
+        },
+        {
+          "id": "public-name",
+          "text": "Use Spektra Mobile as the intended public name with visible upstream attribution",
+          "rationale": "The name is concise and mobile-specific while the attribution makes its technical lineage clear"
+        },
+        {
+          "id": "complete-metadata",
+          "text": "Preserve all available photo metadata, including location, in formats that support it",
+          "rationale": "Users receive complete converted files rather than silently stripped copies"
+        },
+        {
+          "id": "shareable-colour-default",
+          "text": "Use sRGB by default for JPEG and PNG and expose specialist colour choices under Advanced",
+          "rationale": "Default exports display consistently while advanced workflows retain control"
+        }
+      ],
+      "assumptions": [
+        "Users accept browser-specific save or share prompts for separate batch files",
+        "The app may request persistent storage but does not rely on it for source photos",
+        "A two-second initial preview and half-second adjustment target are achievable on representative recent phones"
+      ],
+      "openQuestions": [
+        "Does the Spektra Mobile name pass the required availability check before public launch?"
+      ],
+      "acceptanceCriteria": [
+        {
+          "id": "web-unit-tests",
+          "text": "Editor state, history, recipes, batch overrides, and output naming tests pass",
+          "method": {
+            "kind": "command",
+            "executable": "npm",
+            "args": [
+              "--prefix",
+              "web",
+              "test"
+            ]
+          }
+        },
+        {
+          "id": "web-e2e",
+          "text": "Browser tests cover individual editing, sequential batch processing, both export modes, separate file results, cancellation, and approved resizing",
+          "method": {
+            "kind": "command",
+            "executable": "npm",
+            "args": [
+              "--prefix",
+              "web",
+              "run",
+              "test:e2e"
+            ]
+          }
+        },
+        {
+          "id": "control-coverage",
+          "text": "Automated coverage proves every supported simulation setting is reachable through the editor or its Advanced sections",
+          "method": {
+            "kind": "command",
+            "executable": "npm",
+            "args": [
+              "--prefix",
+              "web",
+              "run",
+              "test:controls"
+            ]
+          }
+        },
+        {
+          "id": "production-build",
+          "text": "The production PWA build succeeds with offline assets and deployment headers",
+          "method": {
+            "kind": "command",
+            "executable": "npm",
+            "args": [
+              "--prefix",
+              "web",
+              "run",
+              "build"
+            ]
+          }
+        },
+        {
+          "id": "pwa-boundary-review",
+          "text": "The delivered application contains no photo upload path, server processing path, hidden quality downgrade, or second copy of profile configuration",
+          "method": {
+            "kind": "claude"
+          }
+        },
+        {
+          "id": "physical-mobile-experience",
+          "text": "On current iOS Safari and Android Chrome, a user can install the app, reopen it offline, edit one photo, compare before and after, undo changes, run a batch, and save separate results",
+          "method": {
+            "kind": "manual"
+          }
+        },
+        {
+          "id": "accessible-mobile-experience",
+          "text": "Touch controls, keyboard navigation, visible focus, contrast, labels, and screen-reader announcements remain usable across the complete workflow",
+          "method": {
+            "kind": "manual"
+          }
+        }
+      ],
+      "verifications": [],
+      "plan": [
+        {
+          "id": "pwa-step-1",
+          "text": "Build the responsive individual editor with live preview, comparison, undo, and complete staged controls",
+          "nodeIds": [
+            "mobile-editor",
+            "browser-adapter",
+            "recipe-store"
+          ],
+          "criterionIds": [
+            "web-unit-tests",
+            "control-coverage",
+            "accessible-mobile-experience"
+          ]
+        },
+        {
+          "id": "pwa-step-2",
+          "text": "Add the sequential batch workspace, shared recipes, per-photo overrides, and separate result actions",
+          "nodeIds": [
+            "batch-workspace",
+            "output-encoder"
+          ],
+          "criterionIds": [
+            "web-unit-tests",
+            "web-e2e",
+            "physical-mobile-experience"
+          ]
+        },
+        {
+          "id": "pwa-step-3",
+          "text": "Add local recipe portability, offline installation, device-limit guidance, progress, cancellation, and screen-awake behavior",
+          "nodeIds": [
+            "recipe-store",
+            "asset-cache",
+            "service-worker"
+          ],
+          "criterionIds": [
+            "web-e2e",
+            "production-build",
+            "physical-mobile-experience"
+          ]
+        },
+        {
+          "id": "pwa-step-4",
+          "text": "Deploy the static application with isolation headers and verify local-only behavior on representative phones",
+          "nodeIds": [
+            "cloudflare-pages",
+            "service-worker"
+          ],
+          "criterionIds": [
+            "production-build",
+            "pwa-boundary-review",
+            "physical-mobile-experience",
+            "accessible-mobile-experience"
+          ]
+        }
+      ]
+    }
+  ]
+}
