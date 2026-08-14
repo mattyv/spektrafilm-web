@@ -94,6 +94,12 @@ test("handles invalid images and approves an oversized mobile photo", async ({ p
   await page.locator("#file-input").setInputFiles({ name: "broken.dng", mimeType: "", buffer: Buffer.from("broken") });
   await page.locator(".queue-select").last().click();
   await expect(page.locator("#preview-meta")).toContainText("unsupported or damaged", { timeout: 60_000 });
+  await page.locator(".controls > details > summary").click();
+  await page.locator("#raw-white-balance").evaluate((select: HTMLSelectElement) => {
+    select.value = "uncorrected";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await expect(page.locator("#toast")).toContainText(/RAW preview failed|unsupported or damaged/, { timeout: 60_000 });
 
   const large = Buffer.from(await page.evaluate(async () => {
     const canvas = document.createElement("canvas");
@@ -110,8 +116,26 @@ test("handles invalid images and approves an oversized mobile photo", async ({ p
   await expect(approve).toBeVisible({ timeout: 60_000 });
   await page.waitForTimeout(500);
   await approve.click();
-  await expect(page.locator("#preview-meta")).toContainText("Approved at");
+  await expect(page.locator("#preview-meta")).toContainText("Approved");
   await expect(page.getByRole("button", { name: "Show before" })).toBeVisible({ timeout: 3 * 60_000 });
+});
+
+test("keeps an opened RAW readable after the picker file becomes unavailable", async ({ page }) => {
+  await ready(page);
+  await page.locator("#file-input").setInputFiles({
+    name: "picker-once.dng",
+    mimeType: "image/x-adobe-dng",
+    buffer: readFileSync(new URL("./fixtures/canon-a410-chdk.dng", import.meta.url)),
+  });
+  await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+  await page.evaluate(() => {
+    File.prototype.arrayBuffer = () => Promise.reject(new DOMException("The I/O read operation failed.", "NotReadableError"));
+  });
+  await page.locator("#output-format").selectOption("jpeg");
+  const pending = page.waitForEvent("download");
+  await page.locator("#export").click();
+  expect((await pending).suggestedFilename()).toBe("picker-once-spektra.jpg");
+  await expect(page.locator("#toast")).not.toContainText("NotReadableError");
 });
 
 test("resets a slider with a mobile double-tap", async ({ page }) => {

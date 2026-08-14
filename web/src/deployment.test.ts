@@ -25,8 +25,11 @@ describe("deployment assets", () => {
     expect(assets).toContain('for (const directory of ["wasm", "wasm-threaded"])');
     expect(assets).toContain("packageJson.version");
     expect(assets).toContain("recursive: entry.isDirectory()");
-    expect(assets).toContain('...files(resolve("public/wasm"), "/wasm")');
-    expect(assets).toContain('...files(resolve("public/wasm-threaded"), "/wasm-threaded")');
+    expect(assets).toContain('resolve("public/wasm", packageJson.version)');
+    expect(assets).toContain('resolve("public/wasm-threaded", packageJson.version)');
+    expect(assets).toContain("item.name !== packageJson.version");
+    expect(serviceWorker).toContain("new Set(");
+    expect(serviceWorker).toContain("if (!manifest.ok)");
     expect(readFileSync(new URL("./main.ts", import.meta.url), "utf8"))
       .toContain("`v${__APP_VERSION__}`");
     const playwrightConfig = readFileSync(new URL("../playwright.config.ts", import.meta.url), "utf8");
@@ -36,5 +39,6 @@ describe("deployment assets", () => {
     expect(deploy).toContain("SPEKTRAFILM_E2E_BASE_URL=https://spektra-mobile.pages.dev");
     expect(deploy).toContain("auto-rotates portrait DNG pixels and exports them once");
     expect(deploy).toContain("renders a mobile DNG after switching print off and back on");
+    expect(deploy).toContain("keeps a Leica Fast GPU export inside the real iPhone memory budget");
   });
 });

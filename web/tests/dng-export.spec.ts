@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const dng = process.env.SPEKTRAFILM_E2E_DNG ?? fileURLToPath(new URL("./fixtures/canon-a410-chdk.dng", import.meta.url));
+const leicaDng = process.env.SPEKTRAFILM_E2E_LEICA_DNG ?? fileURLToPath(new URL("./fixtures/L1002126.DNG", import.meta.url));
 const stockDng = readFileSync(new URL("./fixtures/canon-a410-chdk.dng", import.meta.url));
 const jpeg = readFileSync(new URL("../public/icon.jpg", import.meta.url));
 const appVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -59,7 +60,7 @@ test("develops a sharp desktop DNG preview with working live controls", async ({
   await expect(page.locator("#preview-meta")).toContainText("MP", { timeout: 60_000 });
   const safeSize = page.getByRole("button", { name: /^Use safe/ });
   if (await safeSize.isVisible()) await safeSize.click();
-  await expect(page.locator("#preview-meta")).toContainText(/Safe to process locally|Approved at/);
+  await expect(page.locator("#preview-meta")).toContainText(/Safe to process locally|Approved/);
   await expect.poll(() => page.locator("#preview-image").evaluate((image: HTMLImageElement) => image.naturalWidth), { timeout: 60_000 }).toBeGreaterThan(0);
 
   const before = await displayedImage(page);
@@ -89,6 +90,15 @@ test("develops a sharp desktop DNG preview with working live controls", async ({
   await page.locator("#warmth").fill("100");
   await expect.poll(() => page.locator("#preview-image").getAttribute("src"), { timeout: 3 * 60_000 }).not.toBe(exposed.src);
   expect((await displayedImage(page)).hash).not.toBe(exposed.hash);
+});
+
+test("renders the full-size Leica DNG on desktop without trapping Wasm", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator("#engine-state")).toContainText("Local engine", { timeout: 60_000 });
+  await page.locator("#file-input").setInputFiles(leicaDng);
+  await expect(page.locator("#preview-meta")).toContainText("MP", { timeout: 3 * 60_000 });
+  await expect.poll(() => page.locator("#preview-image").evaluate((image: HTMLImageElement) => image.naturalWidth), { timeout: 3 * 60_000 }).toBeGreaterThan(1000);
+  await expect(page.locator("#toast")).not.toContainText(/unreachable|memory/i);
 });
 
 test("loads a photo-library image and the CC0 DNG on an iPhone budget", async ({ browser }) => {

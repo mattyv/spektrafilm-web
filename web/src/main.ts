@@ -1,7 +1,7 @@
 import "./style.css";
 import { cloneRecipe, isRuntimeSettings, parseRecipe, pushHistory, type Recipe } from "./editor-state";
 import { autoWhiteBalance, neutralWhiteBalance } from "./white-balance";
-import { rawPreviewPolicy } from "./runtime";
+import { exportScale, rawPreviewPolicy, safeExportMegapixels } from "./runtime";
 
 type Inspection = {
   width: number;
@@ -27,6 +27,7 @@ type QueueItem = {
   zoom: number;
   panX: number;
   panY: number;
+  sourceBytes?: ArrayBuffer;
 };
 
 const app = document.querySelector<HTMLElement>("#app")!;
@@ -582,8 +583,10 @@ function sampleWhiteBalance(event: MouseEvent) {
   const count = pixels.length / 4;
   const correction = neutralWhiteBalance(red / count, green / count, blue / count);
   pushUndo();
-  setRange("temperature", Math.max(-100, Math.min(100, Number(document.querySelector<HTMLInputElement>("#temperature")!.value) + correction.temperature)));
-  setRange("tint", Math.max(-100, Math.min(100, Number(document.querySelector<HTMLInputElement>("#tint")!.value) + correction.tint)));
+  const currentTemperature = showingAfter ? Number(document.querySelector<HTMLInputElement>("#temperature")!.value) : 0;
+  const currentTint = showingAfter ? Number(document.querySelector<HTMLInputElement>("#tint")!.value) : 0;
+  setRange("temperature", Math.max(-100, Math.min(100, currentTemperature + correction.temperature)));
+  setRange("tint", Math.max(-100, Math.min(100, currentTint + correction.tint)));
   setWhiteBalancePicker(false);
   configure();
   notify("White balance sampled.");
@@ -682,10 +685,11 @@ async function addFiles(files: File[]) {
   for (const item of additions) {
     try {
       const bytes = await item.file.arrayBuffer();
+      item.sourceBytes = bytes.slice(0);
       item.inspection = await askEngine<Inspection>({ type: "inspect", bytes, limits: desktop ? desktopLimits : undefined }, [bytes]);
       if (isRaw(item.file)) {
-        const rawBytes = await item.file.arrayBuffer();
-        const previewPolicy = rawPreviewPolicy(!desktop, document.querySelector<HTMLSelectElement>("#raw-demosaic")!.value);
+        const rawBytes = item.sourceBytes.slice(0);
+        const previewPolicy = rawPreviewPolicy(!desktop, document.querySelector<HTMLSelectElement>("#raw-demosaic")!.value, item.inspection.megapixels);
         const previewBytes = await askEngine<Uint8Array<ArrayBuffer>>({
           type: "preview",
           bytes: rawBytes,
@@ -729,11 +733,12 @@ function renderSelected(item: QueueItem) {
   previewImage.alt = `Preview of ${item.file.name}`;
   if (item.inspection) {
     const size = `${item.inspection.width} × ${item.inspection.height} · ${item.inspection.megapixels.toFixed(1)} MP`;
+    const fastSafe = Math.min(item.inspection.maximumSafeMegapixels, 128 * 1024 * 1024 / 12 / 1_000_000, isRaw(item.file) && item.inspection.megapixels > 24 ? item.inspection.megapixels / 4 : Infinity, desktop ? Infinity : 2);
     previewMeta.replaceChildren();
     const message = document.createElement("span");
     message.textContent = item.inspection.requiresResize
       ? item.approvedScale
-        ? `${size} · Approved at ${item.inspection.maximumSafeMegapixels.toFixed(1)} MP`
+        ? `${size} · Approved · ${desktop ? `${item.inspection.maximumSafeMegapixels.toFixed(1)} MP` : `Fast ${fastSafe.toFixed(1)} MP · Reference 1.0 MP`}`
         : `${size} · Size choice required for this device`
       : `${size} · Safe to process locally`;
     previewMeta.append(message);
@@ -827,13 +832,12 @@ async function processItem(item: QueueItem, progress: (value: number, label: str
   await queueConfiguration(recipeForItem(item));
   progress(10, "Preparing image…");
   const details = outputDetails(item);
-  const bytes = await item.file.arrayBuffer();
+  const bytes = item.sourceBytes!.slice(0);
   progress(20, "Loading pixels…");
   const storageSafeMegapixels = 128 * 1024 * 1024 / 12 / 1_000_000;
-  const safeMegapixels = exportMode === "fast"
-    ? Math.min(item.inspection!.maximumSafeMegapixels, storageSafeMegapixels)
-    : item.inspection!.maximumSafeMegapixels;
-  const scale = item.approvedScale ? Math.min(1, Math.sqrt(safeMegapixels / item.inspection!.megapixels)) : 1;
+  const rawSafeMegapixels = isRaw(item.file) && item.inspection!.megapixels > 24 ? item.inspection!.megapixels / 4 : storageSafeMegapixels;
+  const safeMegapixels = safeExportMegapixels(!desktop, exportMode, item.inspection!.maximumSafeMegapixels, Math.min(storageSafeMegapixels, rawSafeMegapixels));
+  const scale = exportScale(item.inspection!.megapixels, safeMegapixels);
   const quality = Number(document.querySelector<HTMLInputElement>("#jpeg-quality")!.value);
   progress(25, "Processing full pipeline…");
   const output = await askEngine<Uint8Array<ArrayBuffer>>({ type: "process", bytes, format: details.format, quality, scale, mode: exportMode, rotation: item.rotation }, [bytes]);
@@ -860,7 +864,7 @@ function setExportProgress(value: number, label: string) {
 
 async function renderAfter(item: QueueItem) {
   const rawPreview = isRaw(item.file) && item.url;
-  const bytes = rawPreview ? await (await fetch(item.url)).arrayBuffer() : await item.file.arrayBuffer();
+  const bytes = rawPreview ? await (await fetch(item.url)).arrayBuffer() : item.sourceBytes!.slice(0);
   const scale = rawPreview ? 1 : Math.min(1, Math.sqrt(2 / item.inspection!.megapixels));
   const output = await askEngine<Uint8Array<ArrayBuffer>>({ type: "process", bytes, format: "jpeg", quality: 90, scale, mode: "fast", preserveMetadata: !rawPreview }, [bytes]);
   const url = URL.createObjectURL(new Blob([output], { type: "image/jpeg" }));
@@ -1002,7 +1006,7 @@ function download(blob: Blob, name: string) {
 
 function setEditingDisabled(disabled: boolean) {
   document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement>(
-    "#film-stock,#print-stock,#exposure,#warmth,#auto-exposure,#grain,#halation,#sharpness,#scan-target,#output-colour,#adjustment-scope,#rotate,#reset-view,#compare,#white-balance-mode,#white-balance-picker,#raw-white-balance,#raw-demosaic,#gamut-lightness-active,#photo-input,#file-input,#add-input,#camera-open,#undo,#saved-recipes,#import-recipe,[data-mode],.adjustment-control,#super-advanced input,#super-advanced select,.queue-select,.queue-discard",
+    "#film-stock,#print-stock,#exposure,#warmth,#auto-exposure,#grain,#halation,#sharpness,#scan-target,#output-colour,#adjustment-scope,#rotate,#reset-view,#compare,#white-balance-mode,#white-balance-picker,#raw-white-balance,#raw-demosaic,#gamut-lightness-active,#photo-input,#file-input,#add-input,#camera-open,#undo,#saved-recipes,#import-recipe,#output-format,#jpeg-quality,[data-mode],.adjustment-control,#super-advanced input,#super-advanced select,.queue-select,.queue-discard",
   ).forEach((control) => { control.disabled = disabled; });
 }
 
@@ -1018,7 +1022,7 @@ whiteBalanceMode.addEventListener("change", () => {
     setRange("tint", 0);
     configure();
   } else if (whiteBalanceMode.value === "auto") {
-    void applyAutoWhiteBalance();
+    void applyAutoWhiteBalance().catch((error) => notify(error instanceof Error ? error.message : String(error)));
   }
 });
 previewImage.addEventListener("click", sampleWhiteBalance);
@@ -1226,25 +1230,29 @@ for (const id of ["film-stock", "print-stock", "auto-exposure", "scan-target", "
 }
 
 for (const id of ["raw-white-balance", "raw-demosaic"]) document.querySelector(`#${id}`)!.addEventListener("change", async () => {
-  queueConfiguration(currentRecipe());
-  invalidateProcessedPreviews();
-  showingAfter = false;
-  for (const item of queue.filter((candidate) => isRaw(candidate.file))) {
-    const bytes = await item.file.arrayBuffer();
-    const previewPolicy = rawPreviewPolicy(!desktop, document.querySelector<HTMLSelectElement>("#raw-demosaic")!.value);
-    const previewBytes = await askEngine<Uint8Array<ArrayBuffer>>({
-      type: "preview",
-      bytes,
-      developSensorData: previewPolicy.developSensorData,
-      rawWhiteBalance: document.querySelector<HTMLSelectElement>("#raw-white-balance")!.value,
-      rawDemosaic: previewPolicy.demosaic,
-    }, [bytes]);
-    const previousUrl = item.url;
-    item.url = URL.createObjectURL(new Blob([previewBytes], { type: "image/jpeg" }));
-    if (item.id === selectedId) renderSelected(item);
-    if (previousUrl) setTimeout(() => URL.revokeObjectURL(previousUrl), 1000);
+  try {
+    queueConfiguration(currentRecipe());
+    invalidateProcessedPreviews();
+    showingAfter = false;
+    for (const item of queue.filter((candidate) => isRaw(candidate.file))) {
+      const bytes = item.sourceBytes!.slice(0);
+      const previewPolicy = rawPreviewPolicy(!desktop, document.querySelector<HTMLSelectElement>("#raw-demosaic")!.value, item.inspection?.megapixels);
+      const previewBytes = await askEngine<Uint8Array<ArrayBuffer>>({
+        type: "preview",
+        bytes,
+        developSensorData: previewPolicy.developSensorData,
+        rawWhiteBalance: document.querySelector<HTMLSelectElement>("#raw-white-balance")!.value,
+        rawDemosaic: previewPolicy.demosaic,
+      }, [bytes]);
+      const previousUrl = item.url;
+      item.url = URL.createObjectURL(new Blob([previewBytes], { type: "image/jpeg" }));
+      if (item.id === selectedId) renderSelected(item);
+      if (previousUrl) setTimeout(() => URL.revokeObjectURL(previousUrl), 1000);
+    }
+    scheduleLivePreview();
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error));
   }
-  scheduleLivePreview();
 });
 
 document.querySelector<HTMLSelectElement>("#output-format")!.addEventListener("change", (event) => {
@@ -1327,7 +1335,7 @@ exportButton.addEventListener("click", async () => {
     cancelExportButton.hidden = true;
     exportProgress.hidden = true;
     exportButton.textContent = exportMode === "fast" ? "Export with Fast GPU" : "Export reference quality";
-    if (generation === engineGeneration) await restartEngine();
+    if (generation === engineGeneration) await restartEngine().catch((error) => notify(String(error)));
     renderQueue();
   }
 });
@@ -1336,7 +1344,7 @@ cancelExportButton.addEventListener("click", () => {
   cancelExportButton.disabled = true;
   const restarting = restartEngine();
   notify("Export cancelled.");
-  void restarting.finally(() => {
+  void restarting.catch((error) => notify(String(error))).finally(() => {
     cancelExportButton.disabled = false;
   });
 });
@@ -1371,6 +1379,7 @@ exportQueueButton.addEventListener("click", async () => {
       completed += 1;
       batchMeter.value = completed;
       renderQueue();
+      setEditingDisabled(true);
     }
     notify(cancelBatch ? `Stopped after ${completed} file${completed === 1 ? "" : "s"}.` : `${completed} files ready to save.`);
   } catch (error) {

@@ -13,6 +13,9 @@ cpSync(resolve(source, "luts/spectral_upsampling"), resolve(target, "luts/spectr
 cpSync(resolve("../assets/spektrafilm-icon.jpg"), resolve("public/icon.jpg"));
 for (const directory of ["wasm", "wasm-threaded"]) {
   const source = resolve("public", directory);
+  for (const entry of readdirSync(source, { withFileTypes: true }).filter((item) => /^\d+\.\d+\.\d+$/.test(item.name) && item.name !== packageJson.version)) {
+    rmSync(resolve(source, entry.name), { recursive: true, force: true });
+  }
   const target = resolve(source, packageJson.version);
   rmSync(target, { recursive: true, force: true });
   mkdirSync(target, { recursive: true });
@@ -30,6 +33,6 @@ function files(directory, base, prefix = "") {
 
 writeFileSync(resolve("public/asset-manifest.json"), JSON.stringify([
   ...files(target, "/data"),
-  ...files(resolve("public/wasm"), "/wasm"),
-  ...files(resolve("public/wasm-threaded"), "/wasm-threaded"),
+  ...files(resolve("public/wasm", packageJson.version), `/wasm/${packageJson.version}`),
+  ...files(resolve("public/wasm-threaded", packageJson.version), `/wasm-threaded/${packageJson.version}`),
 ]));

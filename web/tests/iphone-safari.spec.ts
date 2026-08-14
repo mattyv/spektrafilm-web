@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const dng = process.env.SPEKTRAFILM_E2E_DNG ?? fileURLToPath(new URL("./fixtures/canon-a410-chdk.dng", import.meta.url));
+const leicaDng = fileURLToPath(new URL("./fixtures/L1002126.DNG", import.meta.url));
 
 test("fits the iPhone Safari viewport and exposes distinct photo and RAW filters", async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(navigator, "mediaDevices", {
@@ -57,4 +58,42 @@ test("renders a mobile DNG after switching print off and back on", async ({ page
   await page.locator("#print-stock").selectOption("kodak_portra_endura");
   await expect(page.getByRole("button", { name: "Show before" })).toBeVisible({ timeout: 3 * 60_000 });
   await expect(page.locator("#preview-image")).toBeVisible();
+});
+
+test("exports the full-size Leica DNG in Reference Quality without crashing iPhone", async ({ page }) => {
+  test.setTimeout(10 * 60_000);
+  await page.goto("/");
+  await expect(page.locator("#engine-state")).toContainText("Local engine", { timeout: 60_000 });
+  await page.locator("#file-input").setInputFiles(leicaDng);
+  await page.getByRole("button", { name: /^Use safe/ }).click();
+  await page.getByRole("button", { name: "Reference Quality" }).click();
+  await page.locator("#output-format").selectOption("jpeg");
+  const pending = page.waitForEvent("download");
+  await page.locator("#export").click();
+  expect((await pending).suggestedFilename()).toBe("L1002126-spektra.jpg");
+  await expect(page.locator("#toast")).not.toContainText(/unreachable|memory/i);
+});
+
+test("keeps a Leica Fast GPU export inside the real iPhone memory budget", async ({ page }, testInfo) => {
+  test.setTimeout(10 * 60_000);
+  await page.goto("/");
+  await expect(page.locator("#engine-state")).toContainText("Local engine", { timeout: 60_000 });
+  await page.locator("#file-input").setInputFiles(leicaDng);
+  await page.getByRole("button", { name: /^Use safe/ }).click();
+  await expect(page.locator("#preview-meta")).toContainText("Fast 2.0 MP");
+  await page.locator("#output-format").selectOption("jpeg");
+  const pending = page.waitForEvent("download");
+  await page.locator("#export").click();
+  const download = await pending;
+  const exported = testInfo.outputPath("leica-fast.jpg");
+  await download.saveAs(exported);
+  const source = `data:image/jpeg;base64,${readFileSync(exported).toString("base64")}`;
+  const pixels = await page.evaluate(async (url) => {
+    const image = new Image();
+    image.src = url;
+    await image.decode();
+    return image.naturalWidth * image.naturalHeight;
+  }, source);
+  expect(pixels).toBeLessThanOrEqual(2_100_000);
+  await expect(page.locator("#toast")).not.toContainText(/unreachable|memory/i);
 });

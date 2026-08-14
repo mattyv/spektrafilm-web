@@ -200,7 +200,7 @@ fn inspect_dimensions(
     let tile_rows = if row_bytes == 0 {
         0
     } else {
-        (limits.max_storage_binding_bytes / row_bytes).clamp(1, u64::from(height)) as u32
+        (limits.max_storage_binding_bytes / row_bytes).clamp(1, u64::from(height).max(1)) as u32
     };
     let memory_budget_bytes = clamp_browser_memory_budget(limits.memory_budget_bytes);
     let bytes = estimated_working_bytes(width, height);
@@ -495,11 +495,10 @@ fn intermediate_rgb(
             .into_iter()
             .flat_map(|value| [value.max(0.0); 3])
             .collect(),
-        Intermediate::ThreeColor(pixels) => pixels
-            .data
-            .into_iter()
-            .flat_map(|pixel| pixel.map(|value| value.max(0.0)))
-            .collect(),
+        Intermediate::ThreeColor(mut pixels) => {
+            pixels.data.iter_mut().flatten().for_each(|value| *value = value.max(0.0));
+            pixels.data.into_flattened()
+        }
         Intermediate::FourColor(pixels) => pixels
             .data
             .into_iter()
@@ -520,6 +519,7 @@ fn decode_raw_image(bytes: &[u8], scale: f32, raw_development: RawDevelopment) -
     let orientation = raw_orientation(&source, &params);
     let raw =
         rawler::decode(&source, &params).map_err(|error| InspectError::Raw(error.to_string()))?;
+    let (raw_development, scale) = bounded_raw_decode(raw_development, scale, raw.width as u64 * raw.height as u64);
     let developed = raw_developer(raw_development)
         .develop_intermediate(&raw)
         .map_err(|error| InspectError::Raw(error.to_string()))?;
@@ -544,6 +544,14 @@ fn decode_raw_image(bytes: &[u8], scale: f32, raw_development: RawDevelopment) -
     ))
 }
 
+fn bounded_raw_decode(mut development: RawDevelopment, scale: f32, pixels: u64) -> (RawDevelopment, f32) {
+    if pixels > 24_000_000 && scale <= 0.5 && matches!(development.demosaic, RawDemosaic::Ppg) {
+        development.demosaic = RawDemosaic::Superpixel;
+        return (development, (scale * 2.0).min(1.0));
+    }
+    (development, scale)
+}
+
 fn raw_orientation(
     source: &rawler::rawsource::RawSource,
     params: &rawler::decoders::RawDecodeParams,
@@ -563,7 +571,7 @@ fn raw_orientation_from_bytes(bytes: &[u8]) -> Option<image::metadata::Orientati
 }
 
 fn resize_rgb_f32(image: image::Rgb32FImage, scale: f32) -> image::Rgb32FImage {
-    if !(scale > 0.0 && scale < 1.0) {
+    if !(scale > 0.0 && (scale - 1.0).abs() > 1e-6) {
         return image;
     }
     let width = ((image.width() as f32 * scale).round() as u32).max(1);
@@ -1439,7 +1447,7 @@ fn preserve_metadata(
         normalize_metadata_orientation(&mut ancillary);
     }
     rotate_metadata(&mut ancillary, quarter_turns);
-    metadata = ancillary.exif.take().unwrap();
+    metadata = portable_metadata(&ancillary.exif.take().unwrap());
     if (&metadata).into_iter().next().is_none() {
         return Ok(output);
     }
@@ -1447,6 +1455,23 @@ fn preserve_metadata(
         .write_to_vec(&mut output, output_type)
         .map_err(|error| InspectError::Metadata(error.to_string()))?;
     Ok(output)
+}
+
+fn portable_metadata(source: &little_exif::metadata::Metadata) -> little_exif::metadata::Metadata {
+    use little_exif::metadata::Metadata;
+
+    const STRUCTURAL: &[u16] = &[
+        0x0100, 0x0101, 0x0102, 0x0103, 0x0106, 0x0111, 0x0115, 0x0116, 0x0117, 0x011a, 0x011b,
+        0x0128, 0x014a, 0x0201, 0x0202, 0x8769, 0x8825, 0xa005, 0x83bb, 0x02bc, 0x8773,
+        0x927c, 0xc634,
+    ];
+    let mut output = Metadata::new();
+    for tag in source {
+        if !STRUCTURAL.contains(&tag.as_u16()) && tag.value_as_u8_vec(&source.get_endian()).len() <= 60_000 {
+            output.set_tag(tag.clone());
+        }
+    }
+    output
 }
 
 fn jpeg_for_exif(input: &[u8]) -> Vec<u8> {
@@ -1862,6 +1887,7 @@ mod tests {
                 .tile_rows,
             0
         );
+        assert_eq!(inspect_dimensions(1, 0, DeviceLimits::default()).unwrap().tile_rows, 1);
         assert!(
             inspect_dimensions(
                 1,
@@ -2378,6 +2404,22 @@ mod tests {
         assert_ne!(default.data, uncorrected.data);
         assert!(fast.width < default.width);
         assert!(fast.height < default.height);
+    }
+
+    #[test]
+    fn downscaled_raw_export_uses_memory_bounded_demosaic() {
+        let (development, scale) = bounded_raw_decode(RawDevelopment::default(), 0.5, 36_000_000);
+        assert!(matches!(development.demosaic, RawDemosaic::Superpixel));
+        assert_eq!(scale, 1.0);
+        let (development, scale) = bounded_raw_decode(RawDevelopment::default(), 0.525, 36_000_000);
+        assert!(matches!(development.demosaic, RawDemosaic::Ppg));
+        assert_eq!(scale, 0.525);
+        let (development, scale) = bounded_raw_decode(RawDevelopment::default(), 0.8, 36_000_000);
+        assert!(matches!(development.demosaic, RawDemosaic::Ppg));
+        assert_eq!(scale, 0.8);
+        let (development, scale) = bounded_raw_decode(RawDevelopment::default(), 0.08, 7_000_000);
+        assert!(matches!(development.demosaic, RawDemosaic::Ppg));
+        assert_eq!(scale, 0.08);
     }
 
     #[test]
@@ -2953,6 +2995,21 @@ mod tests {
                 output.windows(4).any(|bytes| bytes == b"acsp")
             });
         }
+    }
+
+    #[test]
+    fn jpeg_metadata_drops_raw_payloads_but_keeps_portable_exif() {
+        use little_exif::{exif_tag::ExifTag, ifd::ExifTagGroup, metadata::Metadata};
+
+        let mut source = Metadata::new();
+        source.set_tag(ExifTag::ImageDescription("kept".into()));
+        source.set_tag(ExifTag::UnknownUNDEF(vec![7; 70_000], 0xc634, ExifTagGroup::GENERIC));
+        let portable = portable_metadata(&source);
+        assert_eq!(
+            portable.get_tag(&ExifTag::ImageDescription(String::new())).next(),
+            Some(&ExifTag::ImageDescription("kept".into()))
+        );
+        assert!(portable.get_tag_by_hex(0xc634, None).next().is_none());
     }
 }
 

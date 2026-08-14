@@ -176,6 +176,9 @@ test("stops a sequential batch after the active file", async ({ page }) => {
   await expect(page.locator("#batch-label")).toContainText("1 of 3");
   await expect(page.locator("#exposure")).toBeDisabled();
   await expect(page.locator("#rotate")).toBeDisabled();
+  await expect(page.locator("#output-format")).toBeDisabled();
+  await expect(page.locator("#jpeg-quality")).toBeDisabled();
+  await expect(page.locator(".queue-select").nth(1)).toBeDisabled();
   await page.locator("#cancel-batch").click();
   await expect(page.locator("#batch-progress")).toBeHidden({ timeout: 3 * 60_000 });
   await expect(page.locator("#exposure")).toBeEnabled();

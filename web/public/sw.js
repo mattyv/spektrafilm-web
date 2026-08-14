@@ -1,10 +1,12 @@
-const CACHE = "spektra-mobile-v0.2.12";
+const CACHE = "spektra-mobile-v0.2.14";
 const SHELL = ["/", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
-    const assets = await fetch("/asset-manifest.json").then((response) => response.json());
+    const manifest = await fetch("/asset-manifest.json");
+    if (!manifest.ok) throw new Error("Asset manifest unavailable");
+    const assets = await manifest.json();
     const shell = await fetch("/");
     const html = await shell.clone().text();
     const bundles = [...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)].map((match) => match[1]);
@@ -14,7 +16,7 @@ self.addEventListener("install", (event) => {
       nestedBundles.push(...[...source.matchAll(/\/assets\/[A-Za-z0-9_.-]+/g)].map((match) => match[0]));
     }
     await cache.put("/", shell);
-    await cache.addAll([...SHELL.slice(1), "/asset-manifest.json", ...bundles, ...nestedBundles, ...assets]);
+    await cache.addAll([...new Set([...SHELL.slice(1), "/asset-manifest.json", ...bundles, ...nestedBundles, ...assets])]);
     await self.skipWaiting();
   })());
 });
