@@ -271,7 +271,12 @@ function validateNode(value: unknown, node: ContractTree, path: string): unknown
   const object = value as Record<string, unknown>;
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(object)) {
-    const child = (node as { [key: string]: ContractTree })[key];
+    // hasOwnProperty, not plain indexing: a bare `node[key]` resolves inherited
+    // Object.prototype names, so a recipe carrying "constructor" would be walked as a
+    // subtree and cross the boundary unvalidated.
+    const child = Object.prototype.hasOwnProperty.call(node, key)
+      ? (node as { [key: string]: ContractTree })[key]
+      : undefined;
     const childPath = path ? `${path}.${key}` : key;
     if (child === undefined) throw new SettingsValidationError(`unknown settings key "${childPath}"`);
     result[key] = validateNode(object[key], child, childPath);

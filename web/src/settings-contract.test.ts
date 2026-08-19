@@ -414,3 +414,26 @@ describe("serializeSettings", () => {
     expect(JSON.parse(serializeSettings(settings))).toMatchObject({ settings: { lut_resolution: 0 } });
   });
 });
+
+describe("contract assumptions", () => {
+  // The params.rs parser above maps Rust field names straight to JSON keys. Any of these
+  // attributes would break that assumption while leaving the pinning test green — and a
+  // renamed key would then be emitted by default_settings_json and rejected by
+  // serializeSettings, breaking the app with every suite passing.
+  it("keeps params.rs free of the serde attributes the parser assumes are absent", () => {
+    const offenders = [...paramsSource.matchAll(/#\[serde\([^\]]*\)\]/g)]
+      .map((match) => match[0])
+      .filter((attribute) => /\b(rename|rename_all|alias|skip|skip_serializing|skip_serializing_if|flatten)\b/.test(attribute));
+    expect(offenders).toEqual([]);
+  });
+
+  it("rejects an inherited Object.prototype name as an unknown key", () => {
+    expect(() => serializeSettings({ constructor: {} } as Record<string, unknown>)).toThrow(/unknown settings key "constructor"/);
+  });
+
+  it("keeps main.ts validating settings before they reach the worker", () => {
+    const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+    expect(main).toContain("settings: serializeSettings(recipe.settings)");
+    expect(main).not.toContain("settings: JSON.stringify(recipe.settings)");
+  });
+});

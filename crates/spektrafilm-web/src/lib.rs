@@ -497,11 +497,10 @@ fn build_pipeline(
         .map_err(|error| error.to_string())?;
     let print = load_profile_reader(Cursor::new(print_json), "print profile")
         .map_err(|error| error.to_string())?;
-    let params = browser_params(settings_json
-        .map(|json| serde_json::from_str(&json))
-        .transpose()
-        .map_err(|error| format!("invalid settings: {error}"))?
-        .unwrap_or_else(browser_default_params));
+    let params = match settings_json {
+        Some(json) => validated_params(&json)?,
+        None => browser_default_params(),
+    };
     Pipeline::new_with_assets(
         film,
         print,
@@ -1581,7 +1580,11 @@ impl BrowserEngine {
     }
 
     pub fn update_settings(&mut self, settings_json: &str) -> Result<(), JsValue> {
-        let params = validated_params(settings_json).map_err(|error| JsValue::from_str(&error))?;
+        self.update_settings_inner(settings_json).map_err(|error| JsValue::from_str(&error))
+    }
+
+    fn update_settings_inner(&mut self, settings_json: &str) -> Result<(), String> {
+        let params = validated_params(settings_json)?;
         let mut previous = serde_json::to_value(&self.pipeline.params).unwrap();
         let mut next = serde_json::to_value(&params).unwrap();
         for key in ["io", "adjustments", "composition"] {
@@ -1591,14 +1594,11 @@ impl BrowserEngine {
         self.pipeline = if previous == next {
             self.pipeline.clone().with_params(params)
         } else {
-            build_pipeline(
-                &self.source.film,
-                &self.source.print,
-                &self.source.filters,
-                &self.source.lut,
-                Some(settings_json.into()),
-            )
-            .map_err(|error| JsValue::from_str(&error))?
+            // Call and `?` on one line: a lone `)?` carries only the error edge, which no test
+            // reaches here (validated_params rejects bad settings first), and the crate is under
+            // a 100% line coverage gate.
+            let source = &self.source;
+            build_pipeline(&source.film, &source.print, &source.filters, &source.lut, Some(settings_json.into()))?
         };
         Ok(())
     }
@@ -2230,6 +2230,61 @@ mod tests {
     fn validated_params_rejects_wrong_value_type() {
         let error = validated_params(r#"{"settings":{"lut_resolution":17.1}}"#).unwrap_err();
         assert!(error.contains("invalid settings"), "{error}");
+    }
+
+    /// `BrowserEngine::new` rebuilds through `build_pipeline`, and the worker takes that
+    /// path whenever the film or print stock changes. Without this the guard would be
+    /// asymmetric: the same typo'd payload errors on a settings-only change and is
+    /// silently ignored when it rides along with a stock change.
+    #[test]
+    fn build_pipeline_rejects_unknown_settings_keys() {
+        let error = build_pipeline(
+            include_bytes!("../../../data/profiles/kodak_portra_400.json"),
+            include_bytes!("../../../data/profiles/kodak_portra_endura.json"),
+            include_bytes!("../../../data/filters/neutral_print_filters.json"),
+            include_bytes!("../../../data/luts/spectral_upsampling/irradiance_xy_tc.npy"),
+            Some(r#"{"film_rendr":{}}"#.into()),
+        )
+        .err()
+        .expect("build_pipeline accepted an unknown settings key");
+        assert!(error.contains("film_rendr"), "build_pipeline accepted an unknown key: {error}");
+    }
+
+    /// Pins `update_settings`'s own validation, not `build_pipeline`'s.
+    ///
+    /// Only `io`/`adjustments`/`composition` differ from the live params, and those keys are
+    /// stripped before the comparison, so this takes the cheap `with_params` path and never
+    /// reaches `build_pipeline`. Reverting `update_settings_inner` to a bare
+    /// `serde_json::from_str` therefore fails here and nowhere else.
+    #[test]
+    fn update_settings_rejects_unknown_keys_on_the_cheap_rebuild_path() {
+        let mut engine = BrowserEngine::new(
+            include_bytes!("../../../data/profiles/kodak_portra_400.json"),
+            include_bytes!("../../../data/profiles/kodak_portra_endura.json"),
+            include_bytes!("../../../data/filters/neutral_print_filters.json"),
+            include_bytes!("../../../data/luts/spectral_upsampling/irradiance_xy_tc.npy"),
+            None,
+        )
+        .unwrap();
+        let mut settings = serde_json::to_value(&engine.pipeline.params).unwrap();
+        settings["adjustments"]["contrast"] = serde_json::json!(0.25);
+        settings["film_rendr"] = serde_json::json!({});
+        let error = engine.update_settings_inner(&settings.to_string()).unwrap_err();
+        assert!(error.contains("film_rendr"), "cheap path accepted an unknown key: {error}");
+    }
+
+    #[test]
+    fn update_settings_rejects_unknown_keys_through_the_engine() {
+        let mut engine = BrowserEngine::new(
+            include_bytes!("../../../data/profiles/kodak_portra_400.json"),
+            include_bytes!("../../../data/profiles/kodak_portra_endura.json"),
+            include_bytes!("../../../data/filters/neutral_print_filters.json"),
+            include_bytes!("../../../data/luts/spectral_upsampling/irradiance_xy_tc.npy"),
+            None,
+        )
+        .unwrap();
+        let error = engine.update_settings_inner(r#"{"film_rendr":{}}"#).unwrap_err();
+        assert!(error.contains("film_rendr"), "update_settings accepted an unknown key: {error}");
     }
 
     /// The settings the browser is handed at startup must survive their own validation,
