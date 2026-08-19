@@ -2,15 +2,7 @@ import "./style.css";
 import { cloneRecipe, isRuntimeSettings, parseRecipe, pushHistory, type Recipe } from "./editor-state";
 import { autoWhiteBalance, neutralWhiteBalance } from "./white-balance";
 import { exportScale, rawPreviewPolicy, safeExportMegapixels } from "./runtime";
-
-type Inspection = {
-  width: number;
-  height: number;
-  megapixels: number;
-  estimatedWorkingBytes: number;
-  requiresResize: boolean;
-  maximumSafeMegapixels: number;
-};
+import type { EngineRequests, EngineRequestType, EngineResponse, EngineResults, Inspection } from "./engine-contract";
 
 type QueueItem = {
   id: string;
@@ -212,7 +204,7 @@ function stopEngine(message: string) {
 
 function createWorker() {
   const instance = new Worker(new URL("./engine-worker.ts", import.meta.url), { type: "module" });
-  instance.onmessage = ({ data }) => {
+  instance.onmessage = ({ data }: MessageEvent<EngineResponse>) => {
     const request = pending.get(data.id);
     if (!request) return;
     pending.delete(data.id);
@@ -225,7 +217,10 @@ function createWorker() {
 
 let worker = createWorker();
 
-function askEngine<T>(message: object, transfer: Transferable[] = []): Promise<T> {
+function askEngine<K extends EngineRequestType>(
+  message: { type: K } & EngineRequests[K],
+  transfer: Transferable[] = [],
+): Promise<EngineResults[K]> {
   const id = ++requestId;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
@@ -342,7 +337,7 @@ async function initialize(cleanup = true, ready = true) {
     input.disabled = true;
     return;
   }
-  const info = await askEngine<{ version: string; settings: Record<string, any>; referenceThreads: number }>({ type: "init" });
+  const info = await askEngine({ type: "init" });
   if (cleanup) await clearStoredResults().catch(() => undefined);
   settings = info.settings;
   sharedRecipe = currentRecipe("Default");
@@ -686,11 +681,11 @@ async function addFiles(files: File[]) {
     try {
       const bytes = await item.file.arrayBuffer();
       item.sourceBytes = bytes.slice(0);
-      item.inspection = await askEngine<Inspection>({ type: "inspect", bytes, limits: desktop ? desktopLimits : undefined }, [bytes]);
+      item.inspection = await askEngine({ type: "inspect", bytes, limits: desktop ? desktopLimits : undefined }, [bytes]);
       if (isRaw(item.file)) {
         const rawBytes = item.sourceBytes.slice(0);
         const previewPolicy = rawPreviewPolicy(!desktop, document.querySelector<HTMLSelectElement>("#raw-demosaic")!.value, item.inspection.megapixels);
-        const previewBytes = await askEngine<Uint8Array<ArrayBuffer>>({
+        const previewBytes = await askEngine({
           type: "preview",
           bytes: rawBytes,
           developSensorData: previewPolicy.developSensorData,
@@ -840,7 +835,7 @@ async function processItem(item: QueueItem, progress: (value: number, label: str
   const scale = exportScale(item.inspection!.megapixels, safeMegapixels);
   const quality = Number(document.querySelector<HTMLInputElement>("#jpeg-quality")!.value);
   progress(25, "Processing full pipeline…");
-  const output = await askEngine<Uint8Array<ArrayBuffer>>({ type: "process", bytes, format: details.format, quality, scale, mode: exportMode, rotation: item.rotation }, [bytes]);
+  const output = await askEngine({ type: "process", bytes, format: details.format, quality, scale, mode: exportMode, rotation: item.rotation }, [bytes]);
   progress(90, "Encoding output…");
   return { ...details, bytes: output.buffer };
 }
@@ -866,7 +861,7 @@ async function renderAfter(item: QueueItem) {
   const rawPreview = isRaw(item.file) && item.url;
   const bytes = rawPreview ? await (await fetch(item.url)).arrayBuffer() : item.sourceBytes!.slice(0);
   const scale = rawPreview ? 1 : Math.min(1, Math.sqrt(2 / item.inspection!.megapixels));
-  const output = await askEngine<Uint8Array<ArrayBuffer>>({ type: "process", bytes, format: "jpeg", quality: 90, scale, mode: "fast", preserveMetadata: !rawPreview }, [bytes]);
+  const output = await askEngine({ type: "process", bytes, format: "jpeg", quality: 90, scale, mode: "fast", preserveMetadata: !rawPreview }, [bytes]);
   const url = URL.createObjectURL(new Blob([output], { type: "image/jpeg" }));
   const image = new Image();
   await new Promise<void>((resolve, reject) => {
@@ -1237,7 +1232,7 @@ for (const id of ["raw-white-balance", "raw-demosaic"]) document.querySelector(`
     for (const item of queue.filter((candidate) => isRaw(candidate.file))) {
       const bytes = item.sourceBytes!.slice(0);
       const previewPolicy = rawPreviewPolicy(!desktop, document.querySelector<HTMLSelectElement>("#raw-demosaic")!.value, item.inspection?.megapixels);
-      const previewBytes = await askEngine<Uint8Array<ArrayBuffer>>({
+      const previewBytes = await askEngine({
         type: "preview",
         bytes,
         developSensorData: previewPolicy.developSensorData,

@@ -18,6 +18,8 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: npm ci
         working-directory: web
+      - run: npm run typecheck
+        working-directory: web
       - run: npm run test:coverage
         working-directory: web
       - run: npm run test:coverage:rust

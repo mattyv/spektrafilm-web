@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/engine-bindings.check.ts", "src/engine-contract.ts"]
+}

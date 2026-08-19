@@ -5,7 +5,7 @@ export default defineConfig({
     include: ["src/**/*.test.ts"],
     coverage: {
       provider: "v8",
-      include: ["src/editor-state.ts", "src/engine-transaction.ts"],
+      include: ["src/editor-state.ts", "src/engine-contract.ts", "src/engine-transaction.ts"],
       exclude: ["src/**/*.test.ts"],
       reporter: ["text", "lcov"],
       thresholds: { lines: 100 },
