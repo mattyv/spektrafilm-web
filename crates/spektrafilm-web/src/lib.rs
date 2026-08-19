@@ -264,6 +264,54 @@ fn browser_params(mut params: RuntimeParams) -> RuntimeParams {
     params
 }
 
+/// Dot-joined paths present in `raw` but absent from `allowed`.
+///
+/// Every `RuntimeParams` field carries `#[serde(default)]`, so a typo'd, renamed or removed
+/// settings key silently deserializes to the default instead of failing — the corresponding
+/// UI control then does nothing, with no error anywhere. `update_settings` calls this against
+/// the settings JSON it was given and the canonical shape `RuntimeParams` re-serializes to, so
+/// that class of typo is rejected instead of silently ignored.
+fn unknown_settings_keys(raw: &serde_json::Value, allowed: &serde_json::Value) -> Vec<String> {
+    let mut unknown = Vec::new();
+    collect_unknown_settings_keys(raw, allowed, "", &mut unknown);
+    unknown
+}
+
+fn collect_unknown_settings_keys(raw: &serde_json::Value, allowed: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
+    let (Some(raw_object), Some(allowed_object)) = (raw.as_object(), allowed.as_object()) else {
+        return;
+    };
+    for (key, value) in raw_object {
+        let path = if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") };
+        match allowed_object.get(key) {
+            None => out.push(path),
+            Some(allowed_value) => collect_unknown_settings_keys(value, allowed_value, &path, out),
+        }
+    }
+}
+
+/// Parses and validates a settings payload from the browser.
+///
+/// Kept free of `JsValue` so it is unit-testable on the host: `JsValue` panics with
+/// "function not implemented on non-wasm32 targets", which is why the wasm entry points
+/// stay thin wrappers around plain-`Result` helpers (see also `inspect_image_inner`).
+fn validated_params(settings_json: &str) -> Result<RuntimeParams, String> {
+    let raw: serde_json::Value =
+        serde_json::from_str(settings_json).map_err(|error| format!("invalid settings: {error}"))?;
+    let params = browser_params(
+        serde_json::from_value(raw.clone()).map_err(|error| format!("invalid settings: {error}"))?,
+    );
+    let unknown = unknown_settings_keys(&raw, &serde_json::to_value(&params).unwrap());
+    if !unknown.is_empty() {
+        return Err(format!(
+            "unknown settings key{}: {}",
+            if unknown.len() == 1 { "" } else { "s" },
+            unknown.join(", ")
+        ));
+    }
+    Ok(params)
+}
+
 #[wasm_bindgen]
 pub fn portable_limits_json() -> String {
     format!(
@@ -1533,10 +1581,7 @@ impl BrowserEngine {
     }
 
     pub fn update_settings(&mut self, settings_json: &str) -> Result<(), JsValue> {
-        let params = browser_params(
-            serde_json::from_str(settings_json)
-                .map_err(|error| JsValue::from_str(&format!("invalid settings: {error}")))?,
-        );
+        let params = validated_params(settings_json).map_err(|error| JsValue::from_str(&error))?;
         let mut previous = serde_json::to_value(&self.pipeline.params).unwrap();
         let mut next = serde_json::to_value(&params).unwrap();
         for key in ["io", "adjustments", "composition"] {
@@ -2152,6 +2197,47 @@ mod tests {
             seeded.params.print_render.glare.seed,
             engine.pipeline.params.print_render.glare.seed
         );
+    }
+
+    #[test]
+    fn validated_params_rejects_unknown_keys() {
+        let error = validated_params(r#"{"film_rendr":{}}"#).unwrap_err();
+        assert!(error.contains("film_rendr"), "error did not name the unknown key: {error}");
+    }
+
+    #[test]
+    fn validated_params_rejects_nested_unknown_keys() {
+        let error = validated_params(r#"{"adjustments":{"contrst":0.0}}"#).unwrap_err();
+        assert!(
+            error.contains("adjustments.contrst"),
+            "error did not name the nested unknown key: {error}"
+        );
+    }
+
+    #[test]
+    fn validated_params_reports_every_unknown_key() {
+        let error = validated_params(r#"{"nope":1,"alsonope":2}"#).unwrap_err();
+        assert!(error.contains("nope") && error.contains("alsonope"), "{error}");
+        assert!(error.contains("keys"), "plural form missing: {error}");
+    }
+
+    #[test]
+    fn validated_params_rejects_malformed_json() {
+        assert!(validated_params("{").unwrap_err().contains("invalid settings"));
+    }
+
+    #[test]
+    fn validated_params_rejects_wrong_value_type() {
+        let error = validated_params(r#"{"settings":{"lut_resolution":17.1}}"#).unwrap_err();
+        assert!(error.contains("invalid settings"), "{error}");
+    }
+
+    /// The settings the browser is handed at startup must survive their own validation,
+    /// or every settings change in the app would fail.
+    #[test]
+    fn validated_params_accepts_the_settings_the_browser_is_given() {
+        let defaults = serde_json::to_string(&browser_default_params()).unwrap();
+        assert!(validated_params(&defaults).is_ok(), "default settings failed validation");
     }
 
     #[test]

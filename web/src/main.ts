@@ -3,6 +3,7 @@ import { cloneRecipe, isRuntimeSettings, parseRecipe, pushHistory, type Recipe }
 import { autoWhiteBalance, neutralWhiteBalance } from "./white-balance";
 import { exportScale, rawPreviewPolicy, safeExportMegapixels } from "./runtime";
 import type { EngineRequests, EngineRequestType, EngineResponse, EngineResults, Inspection } from "./engine-contract";
+import { serializeSettings } from "./settings-contract";
 
 type QueueItem = {
   id: string;
@@ -399,7 +400,7 @@ function queueConfiguration(recipe: Recipe) {
     type: "configure",
     film: recipe.film,
     print: recipe.print === "none" ? "kodak_portra_endura" : recipe.print,
-    settings: JSON.stringify(recipe.settings),
+    settings: serializeSettings(recipe.settings),
     rawWhiteBalance: document.querySelector<HTMLSelectElement>("#raw-white-balance")!.value,
     rawDemosaic: document.querySelector<HTMLSelectElement>("#raw-demosaic")!.value,
   })).then(() => undefined);
