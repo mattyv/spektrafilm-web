@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { SETTINGS_CONTRACT, serializeSettings, SettingsValidationError, type ScalarKind, type SettingsContract } from "./settings-contract";
+import { SETTINGS_CONTRACT, serializeSettings, SettingsValidationError, settingStep, type ScalarKind, type SettingsContract } from "./settings-contract";
 
 const paramsSource = readFileSync(new URL("../../crates/spektrafilm-core/src/params.rs", import.meta.url), "utf8");
 const webSource = readFileSync(new URL("../../crates/spektrafilm-web/src/lib.rs", import.meta.url), "utf8");
@@ -372,6 +372,49 @@ describe("serializeSettings", () => {
     expect(() => serializeSettings(settings)).toThrow(/camera\.exposure_compensation_ev/);
   });
 
+  // serde deserializes f32 with a bare `v as f32`, so a finite f64 beyond the f32 range
+  // becomes Infinity in Rust with no error, and validated_params cannot see it either
+  // because serde_json::to_value turns that infinity into Null. Reject it here instead.
+  it("throws for a finite number too large for the f32 field it targets", () => {
+    const settings = validSettings();
+    (settings.camera as Record<string, unknown>).exposure_compensation_ev = 1e39;
+    expect(() => serializeSettings(settings)).toThrow(SettingsValidationError);
+    expect(() => serializeSettings(settings)).toThrow(/camera\.exposure_compensation_ev/);
+  });
+
+  it("throws for a finite number too negative for the f32 field it targets", () => {
+    const settings = validSettings();
+    (settings.settings as Record<string, unknown>).spectral_gaussian_blur = -1e39;
+    expect(() => serializeSettings(settings)).toThrow(/settings\.spectral_gaussian_blur/);
+  });
+
+  it("accepts the largest finite f32 at an f32 field", () => {
+    const settings = validSettings();
+    (settings.camera as Record<string, unknown>).exposure_compensation_ev = 3.4028234663852886e38;
+    expect(JSON.parse(serializeSettings(settings))).toMatchObject({ camera: { exposure_compensation_ev: 3.4028234663852886e38 } });
+  });
+
+  // The f32 bound must not leak onto f64 fields, which carry the full double range.
+  it("accepts a value beyond the f32 range at an f64 field", () => {
+    const settings = validSettings();
+    (settings.film_render as Record<string, unknown> & { dir_couplers: Record<string, unknown> }).dir_couplers.amount = 1e39;
+    expect(JSON.parse(serializeSettings(settings))).toMatchObject({ film_render: { dir_couplers: { amount: 1e39 } } });
+  });
+
+  it("throws for a u32 value beyond the Rust u32 range", () => {
+    const settings = validSettings();
+    (settings.settings as Record<string, unknown>).lut_resolution = 5e9;
+    expect(() => serializeSettings(settings)).toThrow(/settings\.lut_resolution/);
+  });
+
+  // Beyond 2^53 a JS number cannot name a u64 exactly, so the value that reaches Rust is
+  // not the one the caller wrote.
+  it("throws for a u64 value past the exact-integer range", () => {
+    const settings = validSettings();
+    (settings.film_render as Record<string, unknown> & { grain: Record<string, unknown> }).grain.seed = Number.MAX_SAFE_INTEGER + 2;
+    expect(() => serializeSettings(settings)).toThrow(/film_render\.grain\.seed/);
+  });
+
   it("throws for a boolean field given a non-boolean value", () => {
     const settings = validSettings();
     (settings.camera as Record<string, unknown>).auto_exposure = "yes";
@@ -435,5 +478,38 @@ describe("contract assumptions", () => {
     const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
     expect(main).toContain("settings: serializeSettings(recipe.settings)");
     expect(main).not.toContain("settings: JSON.stringify(recipe.settings)");
+  });
+});
+
+describe("settingStep", () => {
+  // The generated super-advanced controls used a fractional step for every numeric field.
+  // On a u32/u64 field any drag then produced a value serializeSettings rejects, and because
+  // the rejected value stays in the live settings tree every later configure() failed too.
+  const INTEGER_PATHS = Object.entries(SETTINGS_CONTRACT)
+    .filter(([, kind]) => kind === "u32" || kind === "u64")
+    .map(([path]) => path);
+
+  it("covers the integer fields the contract actually declares", () => {
+    expect(INTEGER_PATHS.length).toBeGreaterThan(0);
+  });
+
+  it("steps every integer-typed field by whole numbers", () => {
+    for (const path of INTEGER_PATHS) expect(settingStep(path, 0.05)).toBe(1);
+  });
+
+  it("produces a value serializeSettings accepts for every integer field", () => {
+    for (const path of INTEGER_PATHS) {
+      const step = settingStep(path, 0.05);
+      expect(Number.isInteger(step)).toBe(true);
+    }
+  });
+
+  it("keeps the caller's fractional step for float fields", () => {
+    expect(settingStep("camera.exposure_compensation_ev", 0.01)).toBe(0.01);
+    expect(settingStep("film_render.dir_couplers.amount", 0.1)).toBe(0.1);
+  });
+
+  it("keeps the caller's step for a path the contract does not declare", () => {
+    expect(settingStep("camera.not_a_real_field", 0.01)).toBe(0.01);
   });
 });

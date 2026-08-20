@@ -231,6 +231,30 @@ export class SettingsValidationError extends Error {
   }
 }
 
+/**
+ * The step a numeric control may use for `path`, given the step it would otherwise pick.
+ * Integer-typed fields have to move in whole numbers: a fractional value fails validation, and
+ * because the rejected value stays in the live settings tree it strands every later
+ * `configure()` on the last settings the engine accepted.
+ */
+export function settingStep(path: string, step: number): number {
+  const kind = Object.prototype.hasOwnProperty.call(SETTINGS_CONTRACT, path) ? SETTINGS_CONTRACT[path] : undefined;
+  return kind === "u32" || kind === "u64" ? 1 : step;
+}
+
+/** Ranges a finite JS number must sit inside to reach its Rust scalar unchanged. */
+const SCALAR_LIMITS = {
+  // serde deserializes f32 as a bare `v as f32`, which turns anything past this into
+  // Infinity without an error, and serde_json::to_value then hides it as Null.
+  f32Magnitude: 3.4028234663852886e38,
+  // Rust u32::MAX. Beyond it serde's checked try_from rejects the value at the boundary;
+  // catching it here names the offending path instead.
+  u32Max: 4294967295,
+  // Past 2^53-1 a JS number cannot name an integer exactly, so the u64 that reaches Rust
+  // is not the one the caller wrote. Raise only alongside a bigint-aware serializer.
+  u64Max: Number.MAX_SAFE_INTEGER,
+} as const;
+
 function validateScalar(value: unknown, kind: ScalarKind, path: string): unknown {
   if (kind === "bool") {
     if (typeof value !== "boolean") throw new SettingsValidationError(`expected a boolean at "${path}", got ${JSON.stringify(value)}`);
@@ -243,8 +267,15 @@ function validateScalar(value: unknown, kind: ScalarKind, path: string): unknown
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new SettingsValidationError(`expected a finite number at "${path}", got ${JSON.stringify(value)}`);
   }
-  if ((kind === "u32" || kind === "u64") && (!Number.isInteger(value) || value < 0)) {
-    throw new SettingsValidationError(`expected a non-negative integer at "${path}", got ${value}`);
+  if (kind === "f32" && Math.abs(value) > SCALAR_LIMITS.f32Magnitude) {
+    throw new SettingsValidationError(`expected a value within the f32 range at "${path}", got ${value}`);
+  }
+  if (kind === "u32" || kind === "u64") {
+    if (!Number.isInteger(value) || value < 0) {
+      throw new SettingsValidationError(`expected a non-negative integer at "${path}", got ${value}`);
+    }
+    const max = kind === "u32" ? SCALAR_LIMITS.u32Max : SCALAR_LIMITS.u64Max;
+    if (value > max) throw new SettingsValidationError(`expected a value within the ${kind} range at "${path}", got ${value}`);
   }
   return value;
 }
