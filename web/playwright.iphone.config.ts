@@ -13,6 +13,7 @@ export default defineConfig({
     command: "npm run build && npx vite preview --host 127.0.0.1 --port 4173",
     url: "http://127.0.0.1:4173",
     reuseExistingServer: false,
-    timeout: 5 * 60_000,
+    // Same cold-build cost as the coverage config, plus typecheck and the vite build.
+    timeout: 15 * 60_000,
   },
 });
