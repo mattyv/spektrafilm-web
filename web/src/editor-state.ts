@@ -40,3 +40,15 @@ export function isRuntimeSettings(value: unknown): value is Record<string, unkno
 export function pushHistory(history: Recipe[], recipe: Recipe, limit = 50): Recipe[] {
   return [...(limit > 1 ? history.slice(-(limit - 1)) : []), cloneRecipe(recipe)];
 }
+
+let storedResults = 0;
+
+/**
+ * A distinct OPFS name for each stored export. Downloads stream from the stored file and
+ * report no completion, so reusing a name lets a re-export overwrite a file a download is
+ * still reading. The item id stays a prefix so an item's results can be reclaimed together.
+ */
+export function nextStoredResultName(itemId: string, downloadAs: string): string {
+  storedResults += 1;
+  return `${itemId}-${storedResults}-${downloadAs}`;
+}

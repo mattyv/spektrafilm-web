@@ -168,6 +168,26 @@ test("imports, exports, loads, and rejects recipes", async ({ page }) => {
   await page.locator("#import-recipe").setInputFiles({ name: "invalid.json", mimeType: "application/json", buffer: Buffer.from("{}") });
   await expect(page.locator("#toast")).toContainText("Not a Spektra Mobile recipe");
 
+  // A recipe carrying a key the contract no longer knows (an older build, a renamed field)
+  // must be refused before it reaches the live settings tree. Installing it first left every
+  // later configure() failing against the stale key while the preview kept rendering.
+  const stale = JSON.parse(JSON.stringify(settings));
+  stale.camera.exposure_compensation_stops = 2;
+  await page.locator("#import-recipe").setInputFiles({
+    name: "stale.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify({ version: 1, name: "Stale", film: "kodak_portra_400", print: "kodak_portra_endura", settings: stale })),
+  });
+  await expect(page.locator("#toast")).toContainText("camera.exposure_compensation_stops");
+
+  // The live session must be unharmed. A rejected recipe that still reached `settings` would
+  // strand the engine: every ordinary edit from here on fails against the stale key. The
+  // toast keeps its last text until something replaces it, so clear it before editing.
+  await page.evaluate(() => { document.querySelector("#toast")!.textContent = ""; });
+  await page.locator("#exposure").fill("1.5");
+  await page.locator("#exposure").dispatchEvent("change");
+  await expect(page.locator("#exposure-output")).toHaveText("1.5 EV");
+  await expect(page.locator("#toast")).not.toContainText("unknown settings key");
 });
 
 test("recovers from corrupt saved recipe storage", async ({ page }) => {

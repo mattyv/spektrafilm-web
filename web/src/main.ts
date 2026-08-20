@@ -1,9 +1,9 @@
 import "./style.css";
-import { cloneRecipe, isRuntimeSettings, parseRecipe, pushHistory, type Recipe } from "./editor-state";
+import { cloneRecipe, isRuntimeSettings, nextStoredResultName, parseRecipe, pushHistory, type Recipe } from "./editor-state";
 import { autoWhiteBalance, neutralWhiteBalance } from "./white-balance";
 import { exportScale, rawPreviewPolicy, safeExportMegapixels } from "./runtime";
 import type { EngineRequests, EngineRequestType, EngineResponse, EngineResults, Inspection } from "./engine-contract";
-import { serializeSettings } from "./settings-contract";
+import { serializeSettings, settingStep } from "./settings-contract";
 
 type QueueItem = {
   id: string;
@@ -15,6 +15,8 @@ type QueueItem = {
   processedUrl?: string;
   retiredProcessedUrl?: string;
   result?: { storedAs: string; downloadAs: string; mime: string };
+  /** Set once the result has been handed to a download; the stored file outlives it. */
+  saved?: boolean;
   recipe?: Recipe;
   rotation: number;
   zoom: number;
@@ -479,7 +481,7 @@ function renderSuperAdvanced() {
       range.type = "range";
       range.min = String(value < 0 ? -span : 0);
       range.max = String(value === 0 ? 100 : span);
-      range.step = String(span <= 10 ? 0.01 : 0.1);
+      range.step = String(settingStep(path, span <= 10 ? 0.01 : 0.1));
       range.value = exact.value = String(value);
       range.defaultValue = exact.defaultValue = String(value);
       range.dataset.setting = exact.dataset.setting = path;
@@ -610,6 +612,10 @@ function beginViewGesture(item: QueueItem) {
 
 function showRecipe(recipe: Recipe) {
   if (!isRuntimeSettings(recipe.settings)) throw new Error("Not a Spektra Mobile recipe");
+  // Validate before the recipe reaches the live settings tree. A key the contract does not
+  // know would otherwise be installed here and rejected later by every configure(), leaving
+  // the engine stranded on the last settings it accepted while the UI showed the new recipe.
+  serializeSettings(recipe.settings);
   restoring = true;
   settings = structuredClone(recipe.settings);
   settings.adjustments ??= { temperature: 0, tint: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0, saturation: 0, vibrance: 0, clarity: 0, dehaze: 0 };
@@ -778,11 +784,11 @@ function renderQueue() {
     const name = document.createElement("span");
     name.textContent = item.file.name;
     const status = document.createElement("i");
-    status.textContent = item.result ? "Ready to save" : item.inspection?.requiresResize && !item.approvedScale ? "Choose output size" : item.inspection ? `${item.inspection.megapixels.toFixed(1)} MP` : item.error ? "Needs decoder" : "Reading…";
+    status.textContent = item.saved ? "Saved" : item.result ? "Ready to save" : item.inspection?.requiresResize && !item.approvedScale ? "Choose output size" : item.inspection ? `${item.inspection.megapixels.toFixed(1)} MP` : item.error ? "Needs decoder" : "Reading…";
     choose.append(thumbnail, name, status);
     choose.addEventListener("click", () => select(item.id));
     card.append(choose);
-    if (item.result) {
+    if (item.result && !item.saved) {
       const save = document.createElement("button");
       save.type = "button";
       save.className = "queue-save";
@@ -926,12 +932,13 @@ async function resultsDirectory() {
 }
 
 async function storeResult(item: QueueItem, result: Awaited<ReturnType<typeof processItem>>) {
-  const storedAs = `${item.id}-${result.downloadAs}`;
+  const storedAs = nextStoredResultName(item.id, result.downloadAs);
   const file = await (await resultsDirectory()).getFileHandle(storedAs, { create: true });
   const writable = await file.createWritable();
   await writable.write(result.bytes);
   await writable.close();
   item.result = { storedAs, downloadAs: result.downloadAs, mime: result.mime };
+  item.saved = false;
 }
 
 async function saveStoredResult(item: QueueItem) {
@@ -940,7 +947,12 @@ async function saveStoredResult(item: QueueItem) {
     const handle = await (await resultsDirectory()).getFileHandle(item.result.storedAs);
     const file = await handle.getFile();
     download(file, item.result.downloadAs);
-    await removeStoredResult(item);
+    // The download reads from the stored file asynchronously and reports no completion, so
+    // deleting it here cancelled the download. Buffering the bytes instead would hold a
+    // full-size export in memory on the path the iPhone budget guards, so the file is left
+    // for discardItem and the next startup's clearStoredResults to reclaim.
+    item.saved = true;
+    renderQueue();
   } catch (error) {
     notify(error instanceof Error ? error.message : String(error));
   }
@@ -962,8 +974,15 @@ async function shareStoredResult(item: QueueItem) {
 
 async function removeStoredResult(item: QueueItem) {
   if (!item.result) return;
-  await (await resultsDirectory()).removeEntry(item.result.storedAs).catch(() => undefined);
+  // Each export stored its own file, so reclaim every result this item produced, not just
+  // the latest one.
+  const directory = await resultsDirectory();
+  const prefix = `${item.id}-`;
+  for await (const name of (directory as unknown as { keys(): AsyncIterable<string> }).keys()) {
+    if (name.startsWith(prefix)) await directory.removeEntry(name).catch(() => undefined);
+  }
   item.result = undefined;
+  item.saved = false;
   renderQueue();
 }
 
