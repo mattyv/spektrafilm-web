@@ -28,6 +28,14 @@ function threadCount() {
   return referenceThreadCount(navigator.hardwareConcurrency, /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent), self.crossOriginIsolated, typeof SharedArrayBuffer !== "undefined");
 }
 
+/**
+ * The one indirection the engine import needs to be reachable from a test: the module URL is
+ * built at runtime, so no static mock can intercept it.
+ */
+export const engineLoader = {
+  load: (url: string): Promise<unknown> => import(/* @vite-ignore */ url),
+};
+
 async function loadEngine(): Promise<EngineModule> {
   if (!engine) {
     const threads = threadCount();
@@ -38,7 +46,7 @@ async function loadEngine(): Promise<EngineModule> {
     // boundary. `EngineModule` is not hand-maintained guesswork: `engine-contract.test.ts`
     // pins it to the Rust exports and `engine-bindings.check.ts` proves wasm-pack's generated
     // bindings satisfy it, so the cast asserts something both halves of the build verify.
-    const loaded = (await import(/* @vite-ignore */ modulePath)) as EngineModule;
+    const loaded = (await engineLoader.load(modulePath)) as EngineModule;
     await loaded.default(new URL(`${enginePath}/spektrafilm_web_bg.wasm`, self.location.origin));
     if (threads > 1) {
       if (!loaded.initThreadPool) throw new Error(`Engine build at ${enginePath} cannot start ${threads} threads`);
@@ -125,7 +133,9 @@ async function handle(data: EngineRequest): Promise<EngineResults[keyof EngineRe
 let jobs = Promise.resolve();
 
 self.onmessage = ({ data }: MessageEvent<EngineRequest>) => {
-  jobs = jobs.then(() => respond(data));
+  // A rejected `jobs` would skip every later callback, silently retiring the worker, so the
+  // chain must stay resolved even if responding fails outright.
+  jobs = jobs.then(() => respond(data)).catch(() => undefined);
 };
 
 async function respond(data: EngineRequest) {
@@ -138,5 +148,12 @@ async function respond(data: EngineRequest) {
   } catch (error) {
     response = { id: data.id, ok: false, error: error instanceof Error ? error.message : String(error) };
   }
-  self.postMessage(response, transfer);
+  try {
+    self.postMessage(response, transfer);
+  } catch (error) {
+    // A value that survived `handle` can still fail to cross the boundary (an unclonable
+    // result, a detached transfer). Answering with the failure keeps the caller's pending
+    // promise from hanging forever.
+    self.postMessage({ id: data.id, ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
 }
