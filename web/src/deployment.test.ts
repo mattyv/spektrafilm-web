@@ -47,6 +47,6 @@ describe("deployment assets", () => {
     expect(deploy).toContain("SPEKTRAFILM_E2E_BASE_URL=https://spektra-mobile.pages.dev");
     expect(deploy).toContain("auto-rotates portrait DNG pixels and exports them once");
     expect(deploy).toContain("renders a mobile DNG after switching print off and back on");
-    expect(deploy).toContain("keeps a Leica Fast GPU export inside the real iPhone memory budget");
+    expect(deploy).toContain("keeps every Leica renderer and output format inside the iPhone memory budget");
   });
 });
