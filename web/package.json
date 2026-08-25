@@ -4,14 +4,14 @@
   "version": "0.2.16",
   "type": "module",
   "scripts": {
-    "build:wasm": "wasm-pack build ../crates/spektrafilm-web --target web --out-dir ../../web/public/wasm --release && npm run build:wasm:threaded && npm run build:assets",
+    "build:wasm": "wasm-pack build ../crates/spektrafilm-web --target web --out-dir ../../web/public/wasm --release && npm run typecheck:bindings && npm run build:wasm:threaded && npm run build:assets",
     "build:wasm:threaded": "RUSTFLAGS='-C target-feature=+atomics,+bulk-memory' rustup run nightly-2025-06-01 wasm-pack build ../crates/spektrafilm-web --target web --out-dir ../../web/public/wasm-threaded --release --features threads -Z build-std=panic_abort,std",
     "build:assets": "node scripts/copy-assets.mjs",
-    "build": "npm run build:wasm && tsc --noEmit && vite build",
+    "build": "npm run build:wasm && npm run typecheck && vite build",
     "deploy:production": "./scripts/deploy-cloudflare.sh",
-    "test:all": "npm run test:coverage && npm run test:coverage:browser && npm run test:coverage:rust && npm run test:iphone-safari",
+    "test:all": "npm run typecheck && npm run test:coverage && npm run test:coverage:browser && npm run test:coverage:rust && npm run test:iphone-safari",
     "release:verify": "npm run test:all && npm run build",
-    "dev": "npm run build:wasm && tsc --noEmit && vite --host 0.0.0.0",
+    "dev": "npm run build:wasm && npm run typecheck && vite --host 0.0.0.0",
     "desktop": "npm run build && electron electron/main.cjs",
     "desktop:run": "electron electron/main.cjs",
     "test": "vitest run src",
@@ -20,7 +20,9 @@
     "test:coverage:rust": "cargo llvm-cov --manifest-path ../Cargo.toml -p spektrafilm-web --lcov --output-path coverage/rust.lcov && node scripts/check-lcov.mjs coverage/rust.lcov",
     "test:controls": "vitest run src/editor-state.test.ts",
     "test:e2e": "playwright test",
-    "test:iphone-safari": "playwright test --config playwright.iphone.config.ts"
+    "test:iphone-safari": "playwright test --config playwright.iphone.config.ts",
+    "typecheck": "tsc --noEmit",
+    "typecheck:bindings": "tsc --noEmit -p tsconfig.bindings.json"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

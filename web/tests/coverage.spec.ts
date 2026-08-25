@@ -120,6 +120,29 @@ test("handles invalid images and approves an oversized mobile photo", async ({ p
   await expect(page.getByRole("button", { name: "Show before" })).toBeVisible({ timeout: 3 * 60_000 });
 });
 
+test("shows Electron exports as full resolution", async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(navigator, "userAgent", { value: "SpektraElectron", configurable: true }));
+  await ready(page);
+  await page.locator("#photo-input").setInputFiles({ name: "desktop.jpg", mimeType: "image/jpeg", buffer: jpeg });
+  await expect(page.locator("#preview-meta")).toContainText("Desktop app · full resolution", { timeout: 60_000 });
+});
+
+test("keeps the selected preview alive after a WebKit export", async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(navigator, "userAgent", {
+    value: "Mozilla/5.0 AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15",
+    configurable: true,
+  }));
+  await ready(page);
+  await page.locator("#photo-input").setInputFiles({ name: "webkit.jpg", mimeType: "image/jpeg", buffer: jpeg });
+  await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+  await page.locator("#output-format").selectOption("jpeg");
+  const pending = page.waitForEvent("download");
+  await page.locator("#export").click();
+  await pending;
+  await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+  await expect(page.locator("#preview-image")).toBeVisible();
+});
+
 test("keeps an opened RAW readable after the picker file becomes unavailable", async ({ page }) => {
   await ready(page);
   await page.locator("#file-input").setInputFiles({
@@ -168,6 +191,26 @@ test("imports, exports, loads, and rejects recipes", async ({ page }) => {
   await page.locator("#import-recipe").setInputFiles({ name: "invalid.json", mimeType: "application/json", buffer: Buffer.from("{}") });
   await expect(page.locator("#toast")).toContainText("Not a Spektra Mobile recipe");
 
+  // A recipe carrying a key the contract no longer knows (an older build, a renamed field)
+  // must be refused before it reaches the live settings tree. Installing it first left every
+  // later configure() failing against the stale key while the preview kept rendering.
+  const stale = JSON.parse(JSON.stringify(settings));
+  stale.camera.exposure_compensation_stops = 2;
+  await page.locator("#import-recipe").setInputFiles({
+    name: "stale.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify({ version: 1, name: "Stale", film: "kodak_portra_400", print: "kodak_portra_endura", settings: stale })),
+  });
+  await expect(page.locator("#toast")).toContainText("camera.exposure_compensation_stops");
+
+  // The live session must be unharmed. A rejected recipe that still reached `settings` would
+  // strand the engine: every ordinary edit from here on fails against the stale key. The
+  // toast keeps its last text until something replaces it, so clear it before editing.
+  await page.evaluate(() => { document.querySelector("#toast")!.textContent = ""; });
+  await page.locator("#exposure").fill("1.5");
+  await page.locator("#exposure").dispatchEvent("change");
+  await expect(page.locator("#exposure-output")).toHaveText("1.5 EV");
+  await expect(page.locator("#toast")).not.toContainText("unknown settings key");
 });
 
 test("recovers from corrupt saved recipe storage", async ({ page }) => {
@@ -208,15 +251,24 @@ test("connects Lightroom, creates an album, and uploads finished files", async (
   await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
   await page.locator("#output-format").selectOption("jpeg");
   await page.locator("#export-queue").click();
-  await expect(page.getByRole("button", { name: "Lightroom" })).toBeVisible({ timeout: 3 * 60_000 });
-  await page.getByRole("button", { name: "Lightroom" }).click();
+  await expect(page.getByRole("button", { name: "Lightroom", exact: true })).toBeVisible({ timeout: 3 * 60_000 });
+  await page.getByRole("button", { name: "Lightroom", exact: true }).click();
   await expect(page.locator("#toast")).toContainText("to Lightroom");
 
   await page.locator("#export-queue").click();
-  await expect(page.locator("#lightroom-upload-queue")).toBeEnabled({ timeout: 3 * 60_000 });
+  await expect(page.getByRole("button", { name: "Lightroom", exact: true })).toBeVisible({ timeout: 3 * 60_000 });
   failUpload = true;
+  await page.getByRole("button", { name: "Lightroom", exact: true }).click();
+  await expect(page.locator("#toast")).toContainText("Lightroom rejected the upload");
+
+  await page.locator("#export-queue").click();
+  await expect(page.locator("#batch-progress")).toBeVisible();
+  await expect(page.locator("#batch-progress")).toBeHidden({ timeout: 3 * 60_000 });
+  await expect(page.locator("#lightroom-upload-queue")).toBeEnabled({ timeout: 3 * 60_000 });
   await page.locator("#add-input").setInputFiles({ name: "adobe-2.jpg", mimeType: "image/jpeg", buffer: jpeg });
   await page.locator("#export-queue").click();
+  await expect(page.locator("#batch-progress")).toBeVisible();
+  await expect(page.locator("#batch-progress")).toBeHidden({ timeout: 3 * 60_000 });
   await page.locator("#lightroom-upload-queue").click();
   await expect(page.locator("#toast")).toContainText(/Saved \d+ to Lightroom, \d+ failed/, { timeout: 3 * 60_000 });
 
@@ -226,6 +278,12 @@ test("connects Lightroom, creates an album, and uploads finished files", async (
   await expect(page.locator("#toast")).toContainText("Could not create album");
   await page.locator("#lightroom-signout").click();
   await expect(page.locator("#lightroom-signin")).toBeVisible();
+  await page.evaluate(() => Object.defineProperty(crypto.subtle, "digest", {
+    configurable: true,
+    value: async () => { throw new Error("PKCE failed"); },
+  }));
+  await page.locator("#lightroom-signin").click();
+  await expect(page.locator("#toast")).toContainText("PKCE failed");
 });
 
 test("reports an incomplete Lightroom redirect", async ({ page }) => {

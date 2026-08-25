@@ -16,6 +16,8 @@ export default defineConfig({
     command: "VITE_ADOBE_CLIENT_ID=test-client npm run build:wasm && VITE_ADOBE_CLIENT_ID=test-client npx vite --host 127.0.0.1 --port 4173",
     url: "http://127.0.0.1:4173",
     reuseExistingServer: false,
-    timeout: 5 * 60_000,
+    // Cold CI runs compile the crate twice from scratch (plain + threaded build-std),
+    // which overran the old 2 min budget and failed the job before any test ran.
+    timeout: 15 * 60_000,
   },
 });

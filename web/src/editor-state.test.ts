@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cloneRecipe, isRuntimeSettings, parseRecipe, pushHistory, type Recipe } from "./editor-state";
+import { cloneRecipe, isRuntimeSettings, nextStoredResultName, parseRecipe, pushHistory, type Recipe } from "./editor-state";
 
 const recipe: Recipe = { version: 1, name: "Portra", film: "film", print: "paper", settings: {
   camera: { exposure_compensation_ev: 1, auto_exposure: true },
@@ -31,5 +31,24 @@ describe("editor state", () => {
     expect(history).toEqual([recipe]);
     expect(pushHistory(history, copy, 1)).toEqual([copy]);
     expect(pushHistory(history, copy, 2)).toEqual([recipe, copy]);
+  });
+});
+
+describe("nextStoredResultName", () => {
+  // Stored exports used a name derived only from the item and its output name, so
+  // re-exporting an item replaced the file a still-running download was reading from,
+  // cancelling it. Every export needs its own name.
+  it("never repeats a name for the same item and output", () => {
+    const first = nextStoredResultName("item-1", "photo-spektra.jpg");
+    const second = nextStoredResultName("item-1", "photo-spektra.jpg");
+    expect(second).not.toBe(first);
+  });
+
+  it("keeps the item id as a prefix so an item's results can be reclaimed together", () => {
+    expect(nextStoredResultName("item-7", "photo-spektra.jpg").startsWith("item-7-")).toBe(true);
+  });
+
+  it("keeps the download name in the stored name", () => {
+    expect(nextStoredResultName("item-9", "photo-spektra.png")).toContain("photo-spektra.png");
   });
 });

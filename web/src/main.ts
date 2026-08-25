@@ -1,18 +1,10 @@
 import "./style.css";
-import { cloneRecipe, isRuntimeSettings, parseRecipe, pushHistory, type Recipe } from "./editor-state";
-import type { EngineMessage } from "./engine-worker";
+import { cloneRecipe, isRuntimeSettings, nextStoredResultName, parseRecipe, pushHistory, type Recipe } from "./editor-state";
 import { autoWhiteBalance, neutralWhiteBalance } from "./white-balance";
 import * as lightroom from "./lightroom";
 import { exportScale, isWebKitUserAgent, rawPreviewPolicy, safeExportMegapixels } from "./runtime";
-
-type Inspection = {
-  width: number;
-  height: number;
-  megapixels: number;
-  estimatedWorkingBytes: number;
-  requiresResize: boolean;
-  maximumSafeMegapixels: number;
-};
+import type { EngineRequests, EngineRequestType, EngineResponse, EngineResults, Inspection } from "./engine-contract";
+import { serializeSettings, settingStep } from "./settings-contract";
 
 type QueueItem = {
   id: string;
@@ -24,6 +16,8 @@ type QueueItem = {
   processedUrl?: string;
   retiredProcessedUrl?: string;
   result?: { storedAs: string; downloadAs: string; mime: string };
+  /** Set once the result has been handed to a download; the stored file outlives it. */
+  saved?: boolean;
   recipe?: Recipe;
   rotation: number;
   zoom: number;
@@ -268,7 +262,7 @@ function stopEngine(message: string) {
 
 function createWorker() {
   const instance = new Worker(new URL("./engine-worker.ts", import.meta.url), { type: "module" });
-  instance.onmessage = ({ data }) => {
+  instance.onmessage = ({ data }: MessageEvent<EngineResponse>) => {
     const request = pending.get(data.id);
     if (!request) return;
     pending.delete(data.id);
@@ -285,7 +279,10 @@ function createWorker() {
 
 let worker = createWorker();
 
-function askEngine<T>(message: EngineMessage, transfer: Transferable[] = []): Promise<T> {
+function askEngine<K extends EngineRequestType>(
+  message: { type: K } & EngineRequests[K],
+  transfer: Transferable[] = [],
+): Promise<EngineResults[K]> {
   const id = ++requestId;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
@@ -404,7 +401,7 @@ async function initialize(cleanup = true, ready = true) {
     input.disabled = true;
     return;
   }
-  const info = await askEngine<{ version: string; settings: Record<string, any>; referenceThreads: number }>({ type: "init" });
+  const info = await askEngine({ type: "init" });
   if (cleanup) await clearStoredResults().catch(() => undefined);
   settings = info.settings;
   sharedRecipe = currentRecipe("Default");
@@ -467,7 +464,7 @@ function queueConfiguration(recipe: Recipe) {
     type: "configure",
     film: recipe.film,
     print: recipe.print === "none" ? "kodak_portra_endura" : recipe.print,
-    settings: JSON.stringify(recipe.settings),
+    settings: serializeSettings(recipe.settings),
     rawWhiteBalance: document.querySelector<HTMLSelectElement>("#raw-white-balance")!.value,
     rawDemosaic: document.querySelector<HTMLSelectElement>("#raw-demosaic")!.value,
   })).then(() => undefined);
@@ -500,16 +497,6 @@ const settingOptions: Record<string, string[]> = {
   "io.input_gamut_compress.algorithm": ["xy", "off"],
   "io.output_gamut_compress.algorithm": ["cam16ucs", "off"],
 };
-
-const integerSettings = new Set([
-  "film_render.grain.n_sub_layers",
-  "film_render.grain.seed",
-  "film_render.halation.halation_n_bounces",
-  "film_render.glare.seed",
-  "print_render.glare.seed",
-  "settings.lut_resolution",
-  "settings.preview_max_size",
-]);
 
 function settingAt(path: string) {
   const parts = path.split(".");
@@ -556,7 +543,7 @@ function renderSuperAdvanced() {
       range.type = "range";
       range.min = String(value < 0 ? -span : 0);
       range.max = String(value === 0 ? 100 : span);
-      range.step = integerSettings.has(path) ? "1" : String(span <= 10 ? 0.01 : 0.1);
+      range.step = String(settingStep(path, span <= 10 ? 0.01 : 0.1));
       range.value = exact.value = String(value);
       range.defaultValue = exact.defaultValue = String(value);
       range.dataset.setting = exact.dataset.setting = path;
@@ -565,7 +552,7 @@ function renderSuperAdvanced() {
       range.addEventListener("input", () => { exact.value = range.value; });
       exact.addEventListener("input", () => { range.value = exact.value; });
       const changeNumber = (input: HTMLInputElement) => {
-        const next = integerSettings.has(path) ? Math.max(0, Math.round(Number(input.value))) : Number(input.value);
+        const next = range.step === "1" ? Math.max(0, Math.round(Number(input.value))) : Number(input.value);
         range.value = exact.value = String(next);
         changed(next);
       };
@@ -690,6 +677,10 @@ function beginViewGesture(item: QueueItem) {
 
 function showRecipe(recipe: Recipe) {
   if (!isRuntimeSettings(recipe.settings)) throw new Error("Not a Spektra Mobile recipe");
+  // Validate before the recipe reaches the live settings tree. A key the contract does not
+  // know would otherwise be installed here and rejected later by every configure(), leaving
+  // the engine stranded on the last settings it accepted while the UI showed the new recipe.
+  serializeSettings(recipe.settings);
   restoring = true;
   settings = structuredClone(recipe.settings);
   settings.adjustments ??= { temperature: 0, tint: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0, saturation: 0, vibrance: 0, clarity: 0, dehaze: 0 };
@@ -762,11 +753,11 @@ async function addFiles(files: File[]) {
     try {
       const bytes = await item.file.arrayBuffer();
       item.sourceBytes = bytes.slice(0);
-      item.inspection = await askEngine<Inspection>({ type: "inspect", bytes, limits: desktop ? desktopLimits : undefined }, [bytes]);
+      item.inspection = await askEngine({ type: "inspect", bytes, limits: desktop ? desktopLimits : undefined }, [bytes]);
       if (isRaw(item.file)) {
         const rawBytes = item.sourceBytes.slice(0);
         const previewPolicy = rawPreviewPolicy(!desktop, document.querySelector<HTMLSelectElement>("#raw-demosaic")!.value, item.inspection.megapixels);
-        const previewBytes = await askEngine<Uint8Array<ArrayBuffer>>({
+        const previewBytes = await askEngine({
           type: "preview",
           bytes: rawBytes,
           developSensorData: previewPolicy.developSensorData,
@@ -864,11 +855,11 @@ function renderQueue() {
     const name = document.createElement("span");
     name.textContent = item.file.name;
     const status = document.createElement("i");
-    status.textContent = item.result ? "Ready to save" : item.inspection?.requiresResize && !electron && !item.approvedScale ? "Choose output size" : item.inspection ? `${item.inspection.megapixels.toFixed(1)} MP` : item.error ? "Needs decoder" : "Reading…";
+    status.textContent = item.saved ? "Saved" : item.result ? "Ready to save" : item.inspection?.requiresResize && !electron && !item.approvedScale ? "Choose output size" : item.inspection ? `${item.inspection.megapixels.toFixed(1)} MP` : item.error ? "Needs decoder" : "Reading…";
     choose.append(thumbnail, name, status);
     choose.addEventListener("click", () => select(item.id));
     card.append(choose);
-    if (item.result) {
+    if (item.result && !item.saved) {
       const save = document.createElement("button");
       save.type = "button";
       save.className = "queue-save";
@@ -932,7 +923,7 @@ async function processItem(item: QueueItem, progress: (value: number, label: str
   const scale = exportScale(item.inspection!.megapixels, safeMegapixels);
   const quality = Number(document.querySelector<HTMLInputElement>("#jpeg-quality")!.value);
   progress(25, "Processing full pipeline…");
-  const output = await askEngine<Uint8Array<ArrayBuffer>>({ type: "process", bytes, format: details.format, quality, scale, mode: exportMode, rotation: item.rotation }, [bytes]);
+  const output = await askEngine({ type: "process", bytes, format: details.format, quality, scale, mode: exportMode, rotation: item.rotation }, [bytes]);
   progress(90, "Encoding output…");
   return { ...details, bytes: output.buffer };
 }
@@ -958,7 +949,7 @@ async function renderAfter(item: QueueItem) {
   const rawPreview = isRaw(item.file) && item.url;
   const bytes = rawPreview ? await (await fetch(item.url)).arrayBuffer() : item.sourceBytes!.slice(0);
   const scale = rawPreview ? 1 : Math.min(1, Math.sqrt(2 / item.inspection!.megapixels));
-  const output = await askEngine<Uint8Array<ArrayBuffer>>({ type: "process", bytes, format: "jpeg", quality: 90, scale, mode: "fast", preserveMetadata: !rawPreview }, [bytes]);
+  const output = await askEngine({ type: "process", bytes, format: "jpeg", quality: 90, scale, mode: "fast", preserveMetadata: !rawPreview }, [bytes]);
   const url = URL.createObjectURL(new Blob([output], { type: "image/jpeg" }));
   const image = new Image();
   await new Promise<void>((resolve, reject) => {
@@ -1022,12 +1013,13 @@ async function resultsDirectory() {
 }
 
 async function storeResult(item: QueueItem, result: Awaited<ReturnType<typeof processItem>>) {
-  const storedAs = `${item.id}-${result.downloadAs}`;
+  const storedAs = nextStoredResultName(item.id, result.downloadAs);
   const file = await (await resultsDirectory()).getFileHandle(storedAs, { create: true });
   const writable = await file.createWritable();
   await writable.write(result.bytes);
   await writable.close();
   item.result = { storedAs, downloadAs: result.downloadAs, mime: result.mime };
+  item.saved = false;
 }
 
 async function saveStoredResult(item: QueueItem) {
@@ -1036,7 +1028,12 @@ async function saveStoredResult(item: QueueItem) {
     const handle = await (await resultsDirectory()).getFileHandle(item.result.storedAs);
     const file = await handle.getFile();
     download(file, item.result.downloadAs);
-    await removeStoredResult(item);
+    // The download reads from the stored file asynchronously and reports no completion, so
+    // deleting it here cancelled the download. Buffering the bytes instead would hold a
+    // full-size export in memory on the path the iPhone budget guards, so the file is left
+    // for discardItem and the next startup's clearStoredResults to reclaim.
+    item.saved = true;
+    renderQueue();
   } catch (error) {
     notify(error instanceof Error ? error.message : String(error));
   }
@@ -1058,8 +1055,15 @@ async function shareStoredResult(item: QueueItem) {
 
 async function removeStoredResult(item: QueueItem) {
   if (!item.result) return;
-  await (await resultsDirectory()).removeEntry(item.result.storedAs).catch(() => undefined);
+  // Each export stored its own file, so reclaim every result this item produced, not just
+  // the latest one.
+  const directory = await resultsDirectory();
+  const prefix = `${item.id}-`;
+  for await (const name of (directory as unknown as { keys(): AsyncIterable<string> }).keys()) {
+    if (name.startsWith(prefix)) await directory.removeEntry(name).catch(() => undefined);
+  }
   item.result = undefined;
+  item.saved = false;
   renderQueue();
 }
 
@@ -1329,7 +1333,7 @@ for (const id of ["raw-white-balance", "raw-demosaic"]) document.querySelector(`
     for (const item of queue.filter((candidate) => isRaw(candidate.file))) {
       const bytes = item.sourceBytes!.slice(0);
       const previewPolicy = rawPreviewPolicy(!desktop, document.querySelector<HTMLSelectElement>("#raw-demosaic")!.value, item.inspection?.megapixels);
-      const previewBytes = await askEngine<Uint8Array<ArrayBuffer>>({
+      const previewBytes = await askEngine({
         type: "preview",
         bytes,
         developSensorData: previewPolicy.developSensorData,

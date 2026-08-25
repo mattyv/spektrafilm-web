@@ -18,6 +18,8 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: npm ci
         working-directory: web
+      - run: npm run typecheck
+        working-directory: web
       - run: npm run test:coverage
         working-directory: web
       - run: npm run test:coverage:rust
@@ -36,6 +38,15 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
+      # build:wasm:threaded pins this nightly and needs rust-src for -Z build-std.
+      # Installed before stable so that stable stays the default toolchain; the
+      # threaded build reaches nightly explicitly via `rustup run`.
+      # Keep the version in step with package.json.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-06-01
+          targets: wasm32-unknown-unknown
+          components: rust-src
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
