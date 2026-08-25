@@ -176,6 +176,63 @@ test("recovers from corrupt saved recipe storage", async ({ page }) => {
   await expect(page.locator("#saved-recipes option")).toHaveCount(1);
 });
 
+test("connects Lightroom, creates an album, and uploads finished files", async ({ page }) => {
+  let uploads = 0;
+  let failUpload = false;
+  let failAlbum = false;
+  await page.addInitScript(() => sessionStorage.setItem("lr_access_token", "test-token"));
+  await page.route("https://lr.adobe.io/v2/**", async (route) => {
+    const url = route.request().url();
+    if (url.endsWith("/catalog")) return route.fulfill({ body: 'while (1) {}{"id":"catalog"}' });
+    if (url.endsWith("/account")) return route.fulfill({ body: 'while (1) {}{"id":"account"}' });
+    if (url.includes("/albums?") ) return route.fulfill({ body: 'while (1) {}{"resources":[{"id":"album","payload":{"name":"Existing"}}]}' });
+    if (url.includes("/albums/") && route.request().method() === "PUT" && !url.endsWith("/assets")) {
+      return route.fulfill({ status: failAlbum ? 500 : 200, body: failAlbum ? "album failed" : "{}" });
+    }
+    if (url.endsWith("/master")) {
+      uploads++;
+      return route.fulfill({ status: failUpload && uploads % 2 === 0 ? 500 : 200, body: "{}" });
+    }
+    return route.fulfill({ body: "{}" });
+  });
+  await ready(page);
+  await expect(page.locator("#lightroom-signed-in")).toBeVisible();
+  await expect(page.locator("#lightroom-album option")).toContainText(["All photos (no album)", "Existing"]);
+  await page.locator("#lightroom-create-album").click();
+  await expect(page.locator("#toast")).toContainText("Give the album a name");
+  await page.locator("#lightroom-new-album").fill("New album");
+  await page.locator("#lightroom-create-album").click();
+  await expect(page.locator("#toast")).toContainText("Created album");
+
+  await page.locator("#photo-input").setInputFiles({ name: "adobe.jpg", mimeType: "image/jpeg", buffer: jpeg });
+  await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+  await page.locator("#output-format").selectOption("jpeg");
+  await page.locator("#export-queue").click();
+  await expect(page.getByRole("button", { name: "Lightroom" })).toBeVisible({ timeout: 3 * 60_000 });
+  await page.getByRole("button", { name: "Lightroom" }).click();
+  await expect(page.locator("#toast")).toContainText("to Lightroom");
+
+  await page.locator("#export-queue").click();
+  await expect(page.locator("#lightroom-upload-queue")).toBeEnabled({ timeout: 3 * 60_000 });
+  failUpload = true;
+  await page.locator("#add-input").setInputFiles({ name: "adobe-2.jpg", mimeType: "image/jpeg", buffer: jpeg });
+  await page.locator("#export-queue").click();
+  await page.locator("#lightroom-upload-queue").click();
+  await expect(page.locator("#toast")).toContainText(/Saved \d+ to Lightroom, \d+ failed/, { timeout: 3 * 60_000 });
+
+  failAlbum = true;
+  await page.locator("#lightroom-new-album").fill("Broken album");
+  await page.locator("#lightroom-create-album").click();
+  await expect(page.locator("#toast")).toContainText("Could not create album");
+  await page.locator("#lightroom-signout").click();
+  await expect(page.locator("#lightroom-signin")).toBeVisible();
+});
+
+test("reports an incomplete Lightroom redirect", async ({ page }) => {
+  await page.goto("/?code=missing-verifier");
+  await expect(page.locator("#toast")).toContainText("missing verifier");
+});
+
 test("drops and discards files, then handles save and share results", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "canShare", { configurable: true, value: () => true });

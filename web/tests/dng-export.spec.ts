@@ -40,6 +40,31 @@ async function displayedImage(page: import("@playwright/test").Page) {
   });
 }
 
+async function displayedToneStats(page: import("@playwright/test").Page) {
+  return page.locator("#preview-image").evaluate(async (image: HTMLImageElement) => {
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext("2d")!;
+    context.drawImage(image, 0, 0);
+    const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    const tones = [];
+    for (let offset = 0; offset < data.length; offset += 4) {
+      tones.push(0.2126 * data[offset] + 0.7152 * data[offset + 1] + 0.0722 * data[offset + 2]);
+    }
+    tones.sort((left, right) => left - right);
+    const quarter = Math.floor(tones.length / 4);
+    const average = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
+    return {
+      blacks: average(tones.slice(0, quarter)),
+      shadows: average(tones.slice(0, quarter)),
+      highlights: average(tones.slice(-quarter)),
+      whites: average(tones.slice(-quarter)),
+    };
+  });
+}
+
 async function decodedDownload(page: import("@playwright/test").Page, path: string) {
   const source = `data:image/jpeg;base64,${readFileSync(path).toString("base64")}`;
   return page.evaluate(async (url) => {
@@ -92,6 +117,32 @@ test("develops a sharp desktop DNG preview with working live controls", async ({
   expect((await displayedImage(page)).hash).not.toBe(exposed.hash);
 });
 
+for (const mode of ["Fast GPU", "Reference Quality"] as const) {
+for (const control of ["Blacks", "Shadows", "Highlights", "Whites"] as const) {
+  test(`positive ${control} visibly brightens the ${mode} rendered ${control.toLowerCase()}`, async ({ page }) => {
+    test.setTimeout(10 * 60_000);
+    await page.goto("/");
+    await expect(page.locator("#engine-state")).toContainText("Local engine", { timeout: 60_000 });
+    await page.locator("#file-input").setInputFiles(dng);
+    await expect(page.getByRole("button", { name: "Show before" })).toBeVisible({ timeout: 3 * 60_000 });
+    await page.getByRole("button", { name: mode, exact: true }).click();
+    await page.locator(".controls > details > summary").click();
+
+    const render = async (value: number) => {
+      const previous = await page.locator("#preview-image").getAttribute("src");
+      await page.locator(`#${control.toLowerCase()}`).fill(String(value));
+      await expect.poll(() => page.locator("#preview-image").getAttribute("src"), { timeout: 3 * 60_000 }).not.toBe(previous);
+      return displayedToneStats(page);
+    };
+
+    const lowered = await render(-100);
+    const raised = await render(100);
+    expect(raised[control.toLowerCase() as keyof Awaited<ReturnType<typeof displayedToneStats>>])
+      .toBeGreaterThan(lowered[control.toLowerCase() as keyof Awaited<ReturnType<typeof displayedToneStats>>]);
+  });
+}
+}
+
 test("renders the full-size Leica DNG on desktop without trapping Wasm", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator("#engine-state")).toContainText("Local engine", { timeout: 60_000 });
@@ -99,6 +150,49 @@ test("renders the full-size Leica DNG on desktop without trapping Wasm", async (
   await expect(page.locator("#preview-meta")).toContainText("MP", { timeout: 3 * 60_000 });
   await expect.poll(() => page.locator("#preview-image").evaluate((image: HTMLImageElement) => image.naturalWidth), { timeout: 3 * 60_000 }).toBeGreaterThan(1000);
   await expect(page.locator("#toast")).not.toContainText(/unreachable|memory/i);
+});
+
+test("exports the safely resized Leica DNG with extreme tones as Reference TIFF", async ({ page, browserName }) => {
+  test.setTimeout(30 * 60_000);
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.goto("/");
+  await expect(page.locator("#engine-state")).toContainText("Local engine", { timeout: 60_000 });
+  await page.locator("#file-input").setInputFiles(leicaDng);
+  await expect(page.locator("#preview-meta")).toContainText("36.6 MP", { timeout: 60_000 });
+  const safeSize = page.getByRole("button", { name: /^Use safe/ });
+  await expect(safeSize).toBeVisible();
+  await safeSize.click();
+  await expect(page.locator("#preview-meta")).toContainText("Approved");
+  await expect(page.getByRole("button", { name: "Show before" })).toBeVisible({ timeout: 3 * 60_000 });
+  const initialAfter = await page.locator("#preview-image").getAttribute("src");
+  await page.getByRole("button", { name: "Reference Quality", exact: true }).click();
+  const referenceMegapixels = browserName === "webkit" ? 1 : 4;
+  await expect(page.locator("#preview-meta")).toContainText(`Reference ${referenceMegapixels.toFixed(1)} MP`);
+  await page.locator(".controls > details > summary").click();
+  await page.locator("#shadows").fill("100");
+  await page.locator("#highlights").fill("100");
+  await expect.poll(async () => {
+    const message = await page.locator("#toast").textContent();
+    if (/unreachable|memory|allocation/i.test(message ?? "")) return `error: ${message}`;
+    return await page.locator("#preview-image").getAttribute("src") !== initialAfter ? "adjusted" : "waiting";
+  }, { timeout: 2 * 60_000 }).toBe("adjusted");
+  await page.locator("#output-format").selectOption("tiff");
+  await expect(page.locator("#export")).toBeEnabled();
+
+  const pending = page.waitForEvent("download", { timeout: 10 * 60_000 });
+  await page.locator("#export").click();
+  const toast = page.locator("#toast");
+  await expect.poll(() => toast.textContent(), { timeout: 10 * 60_000 })
+    .toMatch(/Reference Quality export complete|unreachable|memory|allocation/i);
+  await expect(toast).not.toContainText(/unreachable|memory|allocation/i);
+  await expect(toast).toContainText("Reference Quality export complete");
+  const path = await (await pending).path();
+  expect(path).not.toBeNull();
+  const output = readFileSync(path!);
+  expect(["II", "MM"]).toContain(output.subarray(0, 2).toString());
+  expect(output.byteLength).toBeGreaterThan(referenceMegapixels * 5_700_000);
+  expect(pageErrors).toEqual([]);
 });
 
 test("loads a photo-library image and the CC0 DNG on an iPhone budget", async ({ browser }) => {

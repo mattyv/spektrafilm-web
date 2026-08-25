@@ -1054,17 +1054,18 @@ fn apply_adjustments(image: &mut ImageBuf, controls: &Adjustments) {
         && controls.highlights == 0.0 && controls.shadows == 0.0 && controls.whites == 0.0
         && controls.blacks == 0.0 && controls.saturation == 0.0 && controls.vibrance == 0.0
         && controls.clarity == 0.0 && controls.dehaze == 0.0 { return; }
-    let source = image.data.clone();
     let luminance = |rgb: &[Scalar]| 0.2126 * to_f32(rgb[0]) + 0.7152 * to_f32(rgb[1]) + 0.0722 * to_f32(rgb[2]);
     let smooth = |edge0: f32, edge1: f32, value: f32| {
         let value = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
         value * value * (3.0 - 2.0 * value)
     };
     let clarity = controls.clarity.clamp(-100.0, 100.0) / 100.0;
+    let source = (clarity != 0.0).then(|| image.data.clone());
     for y in 0..image.height as usize {
         for x in 0..image.width as usize {
             let offset = (y * image.width as usize + x) * 3;
-            let mut rgb = [to_f32(source[offset]), to_f32(source[offset + 1]), to_f32(source[offset + 2])];
+            let input = source.as_ref().unwrap_or(&image.data);
+            let mut rgb = [to_f32(input[offset]), to_f32(input[offset + 1]), to_f32(input[offset + 2])];
             let temperature = controls.temperature.clamp(-100.0, 100.0) / 500.0;
             let tint = controls.tint.clamp(-100.0, 100.0) / 500.0;
             rgb[0] *= 1.0 + temperature;
@@ -1076,15 +1077,26 @@ fn apply_adjustments(image: &mut ImageBuf, controls: &Adjustments) {
             let original_light = light.max(1e-6);
             light = (light - 0.18) * (1.0 + controls.contrast.clamp(-100.0, 100.0) / 100.0) + 0.18;
             let tone = smooth(0.0, 1.0, original_light);
-            for (value, weight, amount) in [
-                (controls.highlights, tone.sqrt(), controls.highlights),
-                (controls.shadows, (1.0 - tone).sqrt(), controls.shadows),
-                (controls.whites, tone * tone, controls.whites),
-                (controls.blacks, (1.0 - tone) * (1.0 - tone), controls.blacks),
-            ] {
-                let amount = amount.clamp(-100.0, 100.0) / 200.0;
-                light += if value >= 0.0 { amount * weight * (1.0 - light) } else { amount * weight * light };
-            }
+            let shadow_weight = smooth(0.0, 0.08, original_light)
+                * (1.0 - smooth(0.15, 0.65, original_light));
+            light *= 2.0_f32.powf(
+                controls.shadows.clamp(-100.0, 100.0) / 100.0 * 1.6 * shadow_weight,
+            );
+            let highlight_weight = smooth(0.2, 0.8, original_light);
+            light *= 2.0_f32.powf(
+                controls.highlights.clamp(-100.0, 100.0) / 100.0 * 1.5 * highlight_weight,
+            );
+            let whites = controls.whites.clamp(-100.0, 100.0) / 200.0;
+            let white_weight = tone * tone;
+            light += if whites >= 0.0 {
+                whites * white_weight * (1.0 - light)
+            } else {
+                whites * white_weight * light
+            };
+            let black_weight = 1.0 - smooth(0.05, 0.45, original_light);
+            light *= 2.0_f32.powf(
+                controls.blacks.clamp(-100.0, 100.0) / 100.0 * black_weight,
+            );
             let dehaze = controls.dehaze.clamp(-100.0, 100.0) / 100.0;
             light = (light - 0.08) * (1.0 + dehaze * 0.6) + 0.08;
             let scale = light.max(0.0) / original_light;
@@ -1097,6 +1109,7 @@ fn apply_adjustments(image: &mut ImageBuf, controls: &Adjustments) {
                 + controls.vibrance.clamp(-100.0, 100.0) / 100.0 * (1.0 - chroma);
             rgb.iter_mut().for_each(|channel| *channel = light + (*channel - light) * saturation);
             if clarity != 0.0 {
+                let source = source.as_ref().unwrap();
                 let mut blurred = 0.0;
                 let mut count = 0.0;
                 for sample_y in y.saturating_sub(1)..=(y + 1).min(image.height as usize - 1) {
@@ -1112,6 +1125,14 @@ fn apply_adjustments(image: &mut ImageBuf, controls: &Adjustments) {
             for channel in 0..3 { image.data[offset + channel] = from_f32(rgb[channel].clamp(0.0, 16.0)); }
         }
     }
+}
+
+fn apply_negative_film_adjustments(image: &mut ImageBuf, controls: &Adjustments) {
+    let mut controls = controls.clone();
+    controls.shadows = -controls.shadows;
+    controls.highlights = -controls.highlights;
+    controls.whites = -controls.whites;
+    apply_adjustments(image, &controls);
 }
 
 fn apply_composition(image: ImageBuf, composition: &Composition) -> ImageBuf {
@@ -1573,13 +1594,12 @@ impl BrowserEngine {
 
     fn encode_output(
         &self,
-        mut image: ImageBuf,
+        image: ImageBuf,
         format: &str,
         quality: u8,
         metadata: &AncillaryMetadata,
     ) -> Result<Vec<u8>, InspectError> {
-        apply_adjustments(&mut image, &self.pipeline.params.adjustments);
-        image = apply_composition(image, &self.pipeline.params.composition);
+        let mut image = apply_composition(image, &self.pipeline.params.composition);
         let color_space = self.pipeline.params.io.output_color_space.as_str();
         let encoded = self.pipeline.params.io.output_cctf_encoding;
         for value in &mut image.data {
@@ -1640,7 +1660,8 @@ impl BrowserEngine {
         )
     }
 
-    fn process_reference_decoded(&self, decoded: ImageBuf, max_pixels: u64) -> ImageBuf {
+    fn process_reference_decoded(&self, mut decoded: ImageBuf, max_pixels: u64) -> ImageBuf {
+        apply_negative_film_adjustments(&mut decoded, &self.pipeline.params.adjustments);
         if u64::from(decoded.width) * u64::from(decoded.height) > max_pixels {
             self.process_reference_strips(decoded)
         } else {
@@ -1832,8 +1853,9 @@ impl BrowserEngine {
             normalize_metadata_orientation(&mut ancillary);
         }
         rotate_metadata(&mut ancillary, quarter_turns);
-        let decoded = decode_standard_image(input, scale, self.raw_development)
+        let mut decoded = decode_standard_image(input, scale, self.raw_development)
             .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        apply_negative_film_adjustments(&mut decoded, &self.pipeline.params.adjustments);
         let processed =
             if u64::from(decoded.width) * u64::from(decoded.height) > 120 * 1024 * 1024 / 12 {
                 self.process_fast_strips(decoded, gpu).await?
@@ -2016,6 +2038,119 @@ mod tests {
                 value.is_finite() && value >= 0.0
             }));
         }
+    }
+
+    #[test]
+    fn shadows_lift_detail_without_a_grey_veil_or_highlight_shift() {
+        let mut image = ImageBuf::from_data(
+            4,
+            1,
+            [0.0, 0.05, 0.25, 0.9]
+                .into_iter()
+                .flat_map(|value| [from_f32(value); 3])
+                .collect(),
+        );
+        apply_adjustments(
+            &mut image,
+            &Adjustments { shadows: 100.0, ..Default::default() },
+        );
+        let values: Vec<f32> = image.data.chunks_exact(3).map(|rgb| to_f32(rgb[0])).collect();
+
+        assert_eq!(values[0], 0.0);
+        assert!(values[1] > 0.10 && values[1] < 0.25, "shadow became {}", values[1]);
+        assert!(values[2] > 0.35 && values[2] < 0.75, "midtone became {}", values[2]);
+        assert!((values[3] - 0.9).abs() < 1e-6, "highlight became {}", values[3]);
+        assert!(values.iter().all(|value| value.is_finite() && *value >= 0.0));
+    }
+
+    #[test]
+    fn blacks_adjust_deep_tones_without_a_grey_veil() {
+        let source = ImageBuf::from_data(
+            4,
+            1,
+            [0.0, 0.05, 0.25, 0.9]
+                .into_iter()
+                .flat_map(|value| [from_f32(value); 3])
+                .collect(),
+        );
+        let adjusted = |amount| {
+            let mut image = source.clone();
+            apply_adjustments(
+                &mut image,
+                &Adjustments { blacks: amount, ..Default::default() },
+            );
+            image.data.chunks_exact(3).map(|rgb| to_f32(rgb[0])).collect::<Vec<_>>()
+        };
+        let raised = adjusted(100.0);
+        let lowered = adjusted(-100.0);
+
+        assert_eq!(raised[0], 0.0);
+        assert!(raised[1] > 0.05 && raised[1] < 0.15, "black became {}", raised[1]);
+        assert!(raised[2] > 0.25 && raised[2] < 0.4, "midtone became {}", raised[2]);
+        assert!((raised[3] - 0.9).abs() < 1e-6, "highlight became {}", raised[3]);
+        assert!(lowered[1] < 0.05);
+        assert!(raised.iter().chain(&lowered).all(|value| value.is_finite() && *value >= 0.0));
+    }
+
+    #[test]
+    fn highlights_make_a_visible_localized_change_in_both_directions() {
+        let source = ImageBuf::from_data(
+            3,
+            1,
+            [0.05, 0.5, 0.9]
+                .into_iter()
+                .flat_map(|value| [from_f32(value); 3])
+                .collect(),
+        );
+        let adjusted = |amount| {
+            let mut image = source.clone();
+            apply_adjustments(
+                &mut image,
+                &Adjustments { highlights: amount, ..Default::default() },
+            );
+            image.data.chunks_exact(3).map(|rgb| to_f32(rgb[0])).collect::<Vec<_>>()
+        };
+        let raised = adjusted(100.0);
+        let lowered = adjusted(-100.0);
+
+        assert!((raised[0] - 0.05).abs() < 1e-6);
+        assert!((lowered[0] - 0.05).abs() < 1e-6);
+        assert!(raised[1] > 0.6 && raised[1] < 1.0, "midtone became {}", raised[1]);
+        assert!(raised[2] > 1.5, "highlight only reached {}", raised[2]);
+        assert!(lowered[2] < 0.6, "highlight only fell to {}", lowered[2]);
+    }
+
+    #[test]
+    fn lightroom_adjustments_run_on_the_linear_scene_before_simulation() {
+        let mut params = browser_default_params();
+        params.camera.auto_exposure = false;
+        params.film_render.grain.active = false;
+        params.film_render.halation.active = false;
+        params.film_render.dir_couplers.active = false;
+        params.print_render.glare.active = false;
+        params.scanner.unsharp_mask = [0.0, 0.0];
+        params.adjustments.shadows = 100.0;
+        let engine = BrowserEngine::new(
+            include_bytes!("../../../data/profiles/kodak_portra_400.json"),
+            include_bytes!("../../../data/profiles/kodak_portra_endura.json"),
+            include_bytes!("../../../data/filters/neutral_print_filters.json"),
+            include_bytes!("../../../data/luts/spectral_upsampling/irradiance_xy_tc.npy"),
+            Some(serde_json::to_string(&params).unwrap()),
+        )
+        .unwrap();
+        let source = ImageBuf::from_data(
+            2,
+            1,
+            [0.05, 0.25]
+                .into_iter()
+                .flat_map(|value| [from_f32(value); 3])
+                .collect(),
+        );
+        let mut adjusted_source = source.clone();
+        apply_negative_film_adjustments(&mut adjusted_source, &params.adjustments);
+        let expected = engine.linear_pipeline().process(adjusted_source, &CpuBackend);
+
+        assert_eq!(engine.process_reference_decoded(source, 4_000_000).data, expected.data);
     }
 
     #[test]

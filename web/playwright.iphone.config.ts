@@ -7,6 +7,7 @@ export default defineConfig({
   testMatch: "iphone-safari.spec.ts",
   use: {
     ...devices["iPhone 15"],
+    browserName: "webkit",
     baseURL: remote ?? "http://127.0.0.1:4173",
   },
   webServer: remote ? undefined : {

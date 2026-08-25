@@ -3,39 +3,18 @@
 import { replaceAfterReady } from "./engine-transaction";
 import { referenceThreadCount } from "./runtime";
 
-type EngineModule = {
-  default: (moduleOrPath?: string | URL) => Promise<unknown>;
-  initThreadPool?: (threads: number) => Promise<void>;
-  BrowserEngine: new (
-    film: Uint8Array,
-    print: Uint8Array,
-    filters: Uint8Array,
-    lut: Uint8Array,
-    settings?: string,
-  ) => {
-    enable_gpu(): Promise<string>;
-    update_settings(settings: string): void;
-    set_raw_development(whiteBalance: string, demosaic: string): void;
-    process_reference(input: Uint8Array, format: string, quality: number, scale: number): Uint8Array;
-    process_reference_rotated(input: Uint8Array, format: string, quality: number, scale: number, rotation: number): Uint8Array;
-    process_fast(input: Uint8Array, format: string, quality: number, scale: number, preserveMetadata: boolean): Promise<Uint8Array>;
-    process_fast_rotated(input: Uint8Array, format: string, quality: number, scale: number, preserveMetadata: boolean, rotation: number): Promise<Uint8Array>;
-    free?: () => void;
-  };
-  default_settings_json: () => string;
-  inspect_image: (bytes: Uint8Array, limits?: string) => string;
-  raw_preview: (bytes: Uint8Array, maximumSize: number, developSensorData: boolean, cameraWhiteBalance: boolean, demosaic: string) => Uint8Array;
-  initialize_webgpu: () => Promise<string>;
-  portable_limits_json: () => string;
-  version: () => string;
+type EngineModule = typeof import("../public/wasm/spektrafilm_web.js") & {
+  initThreadPool?: typeof import("../public/wasm-threaded/spektrafilm_web.js")["initThreadPool"];
 };
 
-type EngineRequest =
-  | { id: number; type: "init" }
-  | { id: number; type: "inspect"; bytes: ArrayBuffer; limits?: string }
-  | { id: number; type: "preview"; bytes: ArrayBuffer; developSensorData: boolean; rawWhiteBalance: string; rawDemosaic: string }
-  | { id: number; type: "configure"; film: string; print: string; settings: string; rawWhiteBalance: string; rawDemosaic: string }
-  | { id: number; type: "process"; bytes: ArrayBuffer; format: string; quality: number; scale: number; mode: "reference" | "fast"; preserveMetadata?: boolean; rotation?: number };
+export type EngineMessage =
+  | { type: "init" }
+  | { type: "inspect"; bytes: ArrayBuffer; limits?: string }
+  | { type: "preview"; bytes: ArrayBuffer; developSensorData: boolean; rawWhiteBalance: string; rawDemosaic: string }
+  | { type: "configure"; film: string; print: string; settings: string; rawWhiteBalance: string; rawDemosaic: string }
+  | { type: "process"; bytes: ArrayBuffer; format: string; quality: number; scale: number; mode: "reference" | "fast"; preserveMetadata?: boolean; rotation?: number };
+
+type EngineRequest = EngineMessage & { id: number };
 
 let engine: EngineModule | undefined;
 let processor: InstanceType<EngineModule["BrowserEngine"]> | undefined;
@@ -59,6 +38,9 @@ async function loadEngine(): Promise<EngineModule> {
     const loaded = (await import(/* @vite-ignore */ modulePath)) as EngineModule;
     await loaded.default(new URL(`${enginePath}/spektrafilm_web_bg.wasm`, self.location.origin));
     if (threads > 1) await loaded.initThreadPool!(threads);
+    if (loaded.version() !== __APP_VERSION__) {
+      throw new Error(`Web ${__APP_VERSION__} loaded Rust engine ${loaded.version()}`);
+    }
     engine = loaded;
   }
   return engine;

@@ -46,6 +46,35 @@ cp target/release/spektrafilm target/release/spektrafilm-f64
 cargo build --release -p spektrafilm-cli --bin decode_raw_gui
 ```
 
+### Web app
+
+The web build needs Node.js/npm, `wasm-pack`, Rust stable, and the pinned nightly toolchain used for threaded WebAssembly:
+
+```bash
+rustup target add wasm32-unknown-unknown
+rustup toolchain install nightly-2025-06-01 --component rust-src
+rustup target add wasm32-unknown-unknown --toolchain nightly-2025-06-01
+cargo install wasm-pack --version 0.13.1 --locked
+
+cd web
+npm ci
+npm run dev       # build WASM, type-check, and start the development server
+npm run build     # production files are written to web/dist
+```
+
+Run `npm run release:verify` before a release; it runs the unit, browser, Rust coverage, iPhone WebKit, and production-build checks.
+
+### Electron desktop
+
+```bash
+cd web
+npm ci
+npm run desktop       # production build, then launch Electron
+npm run desktop:run   # launch an existing web/dist build
+```
+
+The Electron app uses the same generated WebAssembly bindings as the website and exports at full source resolution without the browser/mobile megapixel cap. The repository currently launches an unpackaged Electron app; it does not yet produce an installer.
+
 The GUI auto-detects the f64 binary via `$SPEKTRAFILM_F64_CLI`, then `spektrafilm-f64` on `PATH`, then next to its own executable, then `target/release/spektrafilm-f64`.
 
 Windows builds use the WGSL/wgpu backend by default. The CPU fallback path avoids requiring a system OpenBLAS install on Windows, while macOS and Unix-like targets still use native BLAS providers.

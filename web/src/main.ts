@@ -1,7 +1,9 @@
 import "./style.css";
 import { cloneRecipe, isRuntimeSettings, parseRecipe, pushHistory, type Recipe } from "./editor-state";
+import type { EngineMessage } from "./engine-worker";
 import { autoWhiteBalance, neutralWhiteBalance } from "./white-balance";
-import { exportScale, rawPreviewPolicy, safeExportMegapixels } from "./runtime";
+import * as lightroom from "./lightroom";
+import { exportScale, isWebKitUserAgent, rawPreviewPolicy, safeExportMegapixels } from "./runtime";
 
 type Inspection = {
   width: number;
@@ -41,12 +43,12 @@ app.innerHTML = `
     <div class="stage" id="drop-zone">
       <div class="empty-state" id="empty-state">
         <span class="aperture" aria-hidden="true">✦</span>
-        <h1>Bring your negatives to life.</h1>
-        <p>RAW development and a complete film → print → scan simulation. Your photos stay on this device.</p>
+        <h1 data-i18n="title">Bring your negatives to life.</h1>
+        <p data-i18n="intro">RAW development and a complete film → print → scan simulation. Your photos stay on this device.</p>
         <div class="picker-actions">
-          <label class="primary-button">Open photos<input id="photo-input" type="file" multiple accept="image/*" /></label>
-          <button class="primary-button" id="camera-open" type="button">Take photo</button>
-          <label class="primary-button secondary-button" id="open-label">Open RAW files<input id="file-input" type="file" multiple accept=".dng,.cr2,.cr3,.nef,.nrw,.arw,.raf,.orf,.rw2,.pef,.srw,.x3f,.iiq,.3fr" /></label>
+          <label class="primary-button"><span data-i18n="openPhotos">Open photos</span><input id="photo-input" type="file" multiple accept="image/*" /></label>
+          <button class="primary-button" id="camera-open" type="button" data-i18n="takePhoto">Take photo</button>
+          <label class="primary-button secondary-button" id="open-label"><span data-i18n="openRaw">Open RAW files</span><input id="file-input" type="file" multiple accept=".dng,.cr2,.cr3,.nef,.nrw,.arw,.raf,.orf,.rw2,.pef,.srw,.x3f,.iiq,.3fr" /></label>
         </div>
         <small>RAW · JPEG · PNG · TIFF<br />For Apple ProRAW, shoot with RAW enabled in Camera, then choose it from Photos.</small>
       </div>
@@ -60,9 +62,10 @@ app.innerHTML = `
       </figure>
     </div>
     <aside class="controls" aria-label="Film controls">
+      <select class="language-picker" id="language" aria-label="Language"><option value="en">English</option><option value="zh-Hant">繁體中文</option></select>
       <div class="mode-switch" role="group" aria-label="Export quality">
-        <button type="button" data-mode="reference" aria-pressed="false">Reference Quality</button>
-        <button type="button" data-mode="fast" aria-pressed="true">Fast GPU</button>
+        <button type="button" data-mode="reference" data-i18n="reference" aria-pressed="false">Reference Quality</button>
+        <button type="button" data-mode="fast" data-i18n="fast" aria-pressed="true">Fast GPU</button>
       </div>
       <section>
         <p class="eyebrow">Negative</p>
@@ -168,7 +171,7 @@ app.innerHTML = `
         <details class="expert"><summary>Super advanced</summary><div id="super-advanced"></div></details>
         <div class="recipe-tools"><input id="recipe-name" type="text" value="My recipe" aria-label="Recipe name" /><button class="quiet visible-quiet" id="save-recipe" type="button">Save recipe</button><select id="saved-recipes" aria-label="Saved recipes"><option value="">Saved recipes…</option></select><button class="quiet visible-quiet" id="export-recipe" type="button">Export recipe</button><label class="quiet visible-quiet import-recipe">Import recipe<input id="import-recipe" type="file" accept="application/json,.json" /></label></div>
       </details>
-      <label class="output-format">Output format<select id="output-format"><option value="tiff">16-bit TIFF</option><option value="jpeg">JPEG</option><option value="png">PNG</option></select></label>
+      <label class="output-format"><span data-i18n="outputFormat">Output format</span><select id="output-format"><option value="tiff">16-bit TIFF</option><option value="jpeg">JPEG</option><option value="png">PNG</option></select></label>
       <label class="range-label" id="quality-label" hidden><span>JPEG quality <output>95%</output></span><input id="jpeg-quality" type="range" min="1" max="100" value="95" /></label>
       <button class="export-button" id="export" type="button" disabled>Export with Fast GPU</button>
       <button class="quiet batch-button" id="cancel-export" type="button" hidden>Cancel current export</button>
@@ -181,6 +184,19 @@ app.innerHTML = `
         <div><span id="batch-label">Preparing queue…</span><button class="quiet" id="cancel-batch" type="button">Stop after current</button></div>
         <progress id="batch-meter" value="0" max="1"></progress>
       </div>
+      <section id="lightroom-panel" hidden>
+        <p class="eyebrow">Lightroom</p>
+        <button class="quiet batch-button" id="lightroom-signin" type="button">Connect Lightroom</button>
+        <div id="lightroom-signed-in" hidden>
+          <label>Album<select id="lightroom-album"><option value="">All photos (no album)</option></select></label>
+          <div class="recipe-tools">
+            <input id="lightroom-new-album" type="text" placeholder="New album name" aria-label="New album name" />
+            <button class="quiet visible-quiet" id="lightroom-create-album" type="button">Create</button>
+          </div>
+          <button class="quiet batch-button" id="lightroom-upload-queue" type="button" disabled>Save finished photos to Lightroom</button>
+          <button class="quiet visible-quiet" id="lightroom-signout" type="button">Disconnect</button>
+        </div>
+      </section>
       <p class="privacy">Files, processing, and temporary results stay on this device.</p>
     </aside>
   </section>
@@ -194,6 +210,46 @@ app.innerHTML = `
   </footer>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 `;
+
+type Language = "en" | "zh-Hant";
+const translations = {
+  en: {
+    title: "Bring your negatives to life.",
+    intro: "RAW development and a complete film → print → scan simulation. Your photos stay on this device.",
+    openPhotos: "Open photos",
+    takePhoto: "Take photo",
+    openRaw: "Open RAW files",
+    reference: "Reference Quality",
+    fast: "Fast GPU",
+    outputFormat: "Output format",
+  },
+  "zh-Hant": {
+    title: "讓底片重現生命。",
+    intro: "RAW 顯影，完整模擬底片 → 相紙 → 掃描。照片只會留在此裝置。",
+    openPhotos: "開啟照片",
+    takePhoto: "拍攝照片",
+    openRaw: "開啟 RAW 檔案",
+    reference: "參考品質",
+    fast: "快速 GPU",
+    outputFormat: "輸出格式",
+  },
+} as const;
+
+const languageSelect = document.querySelector<HTMLSelectElement>("#language")!;
+function applyLanguage(language: Language) {
+  document.documentElement.lang = language;
+  languageSelect.value = language;
+  for (const [key, text] of Object.entries(translations[language])) {
+    document.querySelectorAll<HTMLElement>(`[data-i18n="${key}"]`).forEach((element) => element.textContent = text);
+  }
+}
+
+applyLanguage(localStorage.getItem("spektra-language") === "zh-Hant" ? "zh-Hant" : "en");
+languageSelect.addEventListener("change", () => {
+  const language = languageSelect.value === "zh-Hant" ? "zh-Hant" : "en";
+  localStorage.setItem("spektra-language", language);
+  applyLanguage(language);
+});
 
 let requestId = 0;
 const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
@@ -218,14 +274,18 @@ function createWorker() {
     pending.delete(data.id);
     data.ok ? request.resolve(data.value) : request.reject(new Error(data.error));
   };
-  instance.onerror = (event) => stopEngine(event.message || "Processing worker stopped");
-  instance.onmessageerror = () => stopEngine("Worker message failed");
+  instance.onerror = (event) => {
+    if (instance === worker) stopEngine(event.message || "Processing worker stopped");
+  };
+  instance.onmessageerror = () => {
+    if (instance === worker) stopEngine("Worker message failed");
+  };
   return instance;
 }
 
 let worker = createWorker();
 
-function askEngine<T>(message: object, transfer: Transferable[] = []): Promise<T> {
+function askEngine<T>(message: EngineMessage, transfer: Transferable[] = []): Promise<T> {
   const id = ++requestId;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
@@ -291,6 +351,8 @@ const viewPointers = new Map<number, { x: number; y: number }>();
 let viewGesture = { distance: 0, centerX: 0, centerY: 0, zoom: 1, panX: 0, panY: 0 };
 const rawExtensions = new Set(["dng", "cr2", "cr3", "nef", "nrw", "arw", "raf", "orf", "rw2", "pef", "srw", "x3f", "iiq", "3fr"]);
 const desktop = !/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+const electron = /SpektraElectron/i.test(navigator.userAgent);
+const webkit = isWebKitUserAgent(navigator.userAgent);
 const desktopLimits = JSON.stringify({ memoryBudgetBytes: 8 * 1024 ** 3, maxStorageBindingBytes: 2 * 1024 ** 3 });
 
 function isRaw(file: File) {
@@ -366,6 +428,7 @@ async function restartEngine() {
   gpuReady = false;
   state.classList.remove("ready", "error");
   state.lastChild!.textContent = "Restarting local engine";
+  if (webkit) await new Promise((resolve) => window.setTimeout(resolve, 1000));
   worker = createWorker();
   await initialize(false, false);
   if (activeRecipe) {
@@ -438,6 +501,16 @@ const settingOptions: Record<string, string[]> = {
   "io.output_gamut_compress.algorithm": ["cam16ucs", "off"],
 };
 
+const integerSettings = new Set([
+  "film_render.grain.n_sub_layers",
+  "film_render.grain.seed",
+  "film_render.halation.halation_n_bounces",
+  "film_render.glare.seed",
+  "print_render.glare.seed",
+  "settings.lut_resolution",
+  "settings.preview_max_size",
+]);
+
 function settingAt(path: string) {
   const parts = path.split(".");
   const key = parts.pop()!;
@@ -483,7 +556,7 @@ function renderSuperAdvanced() {
       range.type = "range";
       range.min = String(value < 0 ? -span : 0);
       range.max = String(value === 0 ? 100 : span);
-      range.step = String(span <= 10 ? 0.01 : 0.1);
+      range.step = integerSettings.has(path) ? "1" : String(span <= 10 ? 0.01 : 0.1);
       range.value = exact.value = String(value);
       range.defaultValue = exact.defaultValue = String(value);
       range.dataset.setting = exact.dataset.setting = path;
@@ -491,8 +564,13 @@ function renderSuperAdvanced() {
       exact.step = range.step;
       range.addEventListener("input", () => { exact.value = range.value; });
       exact.addEventListener("input", () => { range.value = exact.value; });
-      range.addEventListener("change", () => changed(Number(range.value)));
-      exact.addEventListener("change", () => changed(Number(exact.value)));
+      const changeNumber = (input: HTMLInputElement) => {
+        const next = integerSettings.has(path) ? Math.max(0, Math.round(Number(input.value))) : Number(input.value);
+        range.value = exact.value = String(next);
+        changed(next);
+      };
+      range.addEventListener("change", () => changeNumber(range));
+      exact.addEventListener("change", () => changeNumber(exact));
       range.addEventListener("dblclick", () => {
         range.value = range.defaultValue;
         exact.value = exact.defaultValue;
@@ -540,16 +618,14 @@ function setWhiteBalancePicker(active: boolean) {
 
 async function applyAutoWhiteBalance() {
   const item = queue.find((candidate) => candidate.id === selectedId);
-  if (!item?.url) return;
-  const image = new Image();
-  image.src = item.url;
-  await image.decode();
+  if (!item?.url || !previewImage.src) return;
+  await previewImage.decode();
   const canvas = document.createElement("canvas");
-  const scale = Math.min(1, 256 / Math.max(image.naturalWidth, image.naturalHeight));
-  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const scale = Math.min(1, 256 / Math.max(previewImage.naturalWidth, previewImage.naturalHeight));
+  canvas.width = Math.max(1, Math.round(previewImage.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(previewImage.naturalHeight * scale));
   const context = canvas.getContext("2d")!;
-  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  context.drawImage(previewImage, 0, 0, canvas.width, canvas.height);
   const correction = autoWhiteBalance(context.getImageData(0, 0, canvas.width, canvas.height).data);
   setRange("temperature", correction.temperature);
   setRange("tint", correction.tint);
@@ -733,27 +809,33 @@ function renderSelected(item: QueueItem) {
   previewImage.alt = `Preview of ${item.file.name}`;
   if (item.inspection) {
     const size = `${item.inspection.width} × ${item.inspection.height} · ${item.inspection.megapixels.toFixed(1)} MP`;
-    const fastSafe = Math.min(item.inspection.maximumSafeMegapixels, 128 * 1024 * 1024 / 12 / 1_000_000, isRaw(item.file) && item.inspection.megapixels > 24 ? item.inspection.megapixels / 4 : Infinity, desktop ? Infinity : 2);
+    const storageSafe = 128 * 1024 * 1024 / 12 / 1_000_000;
+    const rawSafe = isRaw(item.file) && item.inspection.megapixels > 24 ? item.inspection.megapixels / 4 : storageSafe;
+    const fastSafe = safeExportMegapixels(!desktop, "fast", item.inspection.maximumSafeMegapixels, Math.min(storageSafe, rawSafe), webkit, electron);
+    const referenceSafe = safeExportMegapixels(!desktop, "reference", item.inspection.maximumSafeMegapixels, Math.min(storageSafe, rawSafe), webkit, electron);
+    const selectedSafe = exportMode === "fast" ? fastSafe : referenceSafe;
     previewMeta.replaceChildren();
     const message = document.createElement("span");
-    message.textContent = item.inspection.requiresResize
+    message.textContent = electron
+      ? `${size} · Desktop app · full resolution`
+      : item.inspection.requiresResize
       ? item.approvedScale
-        ? `${size} · Approved · ${desktop ? `${item.inspection.maximumSafeMegapixels.toFixed(1)} MP` : `Fast ${fastSafe.toFixed(1)} MP · Reference 1.0 MP`}`
+        ? `${size} · Approved · Fast ${fastSafe.toFixed(1)} MP · Reference ${referenceSafe.toFixed(1)} MP`
         : `${size} · Size choice required for this device`
       : `${size} · Safe to process locally`;
     previewMeta.append(message);
-    if (item.inspection.requiresResize && !item.approvedScale) {
+    if (!electron && item.inspection.requiresResize && !item.approvedScale) {
       const approve = document.createElement("button");
       approve.type = "button";
-      approve.textContent = `Use safe ${item.inspection.maximumSafeMegapixels.toFixed(1)} MP`;
+      approve.textContent = `Use safe ${selectedSafe.toFixed(1)} MP`;
       approve.addEventListener("click", () => {
-        item.approvedScale = Math.sqrt(item.inspection!.maximumSafeMegapixels / item.inspection!.megapixels);
+        item.approvedScale = Math.sqrt(selectedSafe / item.inspection!.megapixels);
         renderSelected(item);
         renderQueue();
       });
       previewMeta.append(approve);
     }
-    previewMeta.classList.toggle("warning", item.inspection.requiresResize);
+    previewMeta.classList.toggle("warning", !electron && item.inspection.requiresResize);
   } else {
     previewMeta.textContent = item.error ?? "Reading image locally…";
   }
@@ -782,7 +864,7 @@ function renderQueue() {
     const name = document.createElement("span");
     name.textContent = item.file.name;
     const status = document.createElement("i");
-    status.textContent = item.result ? "Ready to save" : item.inspection?.requiresResize && !item.approvedScale ? "Choose output size" : item.inspection ? `${item.inspection.megapixels.toFixed(1)} MP` : item.error ? "Needs decoder" : "Reading…";
+    status.textContent = item.result ? "Ready to save" : item.inspection?.requiresResize && !electron && !item.approvedScale ? "Choose output size" : item.inspection ? `${item.inspection.megapixels.toFixed(1)} MP` : item.error ? "Needs decoder" : "Reading…";
     choose.append(thumbnail, name, status);
     choose.addEventListener("click", () => select(item.id));
     card.append(choose);
@@ -801,6 +883,15 @@ function renderQueue() {
         share.addEventListener("click", () => void shareStoredResult(item));
         card.append(share);
       }
+      if (lightroom.signedIn()) {
+        const toLightroom = document.createElement("button");
+        toLightroom.type = "button";
+        toLightroom.className = "queue-save";
+        toLightroom.textContent = "Lightroom";
+        toLightroom.disabled = batchRunning || uploadingToLightroom;
+        toLightroom.addEventListener("click", () => void uploadItemToLightroom(item));
+        card.append(toLightroom);
+      }
     }
     const discard = document.createElement("button");
     discard.type = "button";
@@ -812,10 +903,11 @@ function renderQueue() {
     return card;
   }));
   exportQueueButton.disabled = !gpuReady || batchRunning || !queue.some(isProcessable);
+  renderLightroom();
 }
 
 function isProcessable(item: QueueItem) {
-  return Boolean(item.inspection && (!item.inspection.requiresResize || item.approvedScale));
+  return Boolean(item.inspection && (electron || !item.inspection.requiresResize || item.approvedScale));
 }
 
 function outputDetails(item: QueueItem) {
@@ -836,7 +928,7 @@ async function processItem(item: QueueItem, progress: (value: number, label: str
   progress(20, "Loading pixels…");
   const storageSafeMegapixels = 128 * 1024 * 1024 / 12 / 1_000_000;
   const rawSafeMegapixels = isRaw(item.file) && item.inspection!.megapixels > 24 ? item.inspection!.megapixels / 4 : storageSafeMegapixels;
-  const safeMegapixels = safeExportMegapixels(!desktop, exportMode, item.inspection!.maximumSafeMegapixels, Math.min(storageSafeMegapixels, rawSafeMegapixels));
+  const safeMegapixels = safeExportMegapixels(!desktop, exportMode, item.inspection!.maximumSafeMegapixels, Math.min(storageSafeMegapixels, rawSafeMegapixels), webkit, electron);
   const scale = exportScale(item.inspection!.megapixels, safeMegapixels);
   const quality = Number(document.querySelector<HTMLInputElement>("#jpeg-quality")!.value);
   progress(25, "Processing full pipeline…");
@@ -1335,7 +1427,14 @@ exportButton.addEventListener("click", async () => {
     cancelExportButton.hidden = true;
     exportProgress.hidden = true;
     exportButton.textContent = exportMode === "fast" ? "Export with Fast GPU" : "Export reference quality";
-    if (generation === engineGeneration) await restartEngine().catch((error) => notify(String(error)));
+    if (generation === engineGeneration) {
+      if (webkit) {
+        const selected = queue.find((candidate) => candidate.id === selectedId);
+        if (selected) renderSelected(selected);
+      } else {
+        await restartEngine().catch((error) => notify(String(error)));
+      }
+    }
     renderQueue();
   }
 });
@@ -1394,14 +1493,135 @@ exportQueueButton.addEventListener("click", async () => {
     renderQueue();
   }
 });
+/* ---------------------------------------------------------------- Lightroom */
+
+const lightroomPanel = document.querySelector<HTMLElement>("#lightroom-panel")!;
+const lightroomSignIn = document.querySelector<HTMLButtonElement>("#lightroom-signin")!;
+const lightroomSignedIn = document.querySelector<HTMLElement>("#lightroom-signed-in")!;
+const lightroomAlbum = document.querySelector<HTMLSelectElement>("#lightroom-album")!;
+const lightroomNewAlbum = document.querySelector<HTMLInputElement>("#lightroom-new-album")!;
+const lightroomCreateAlbum = document.querySelector<HTMLButtonElement>("#lightroom-create-album")!;
+const lightroomUploadQueue = document.querySelector<HTMLButtonElement>("#lightroom-upload-queue")!;
+const lightroomSignOut = document.querySelector<HTMLButtonElement>("#lightroom-signout")!;
+
+let uploadingToLightroom = false;
+
+function renderLightroom() {
+  lightroomPanel.hidden = !lightroom.lightroomConfigured();
+  const connected = lightroom.signedIn();
+  lightroomSignIn.hidden = connected;
+  lightroomSignedIn.hidden = !connected;
+  lightroomUploadQueue.disabled = uploadingToLightroom || batchRunning || !queue.some((item) => item.result);
+}
+
+async function refreshAlbums() {
+  const albums = await lightroom.listAlbums();
+  const chosen = lightroomAlbum.value;
+  lightroomAlbum.replaceChildren(new Option("All photos (no album)", ""));
+  for (const album of albums) lightroomAlbum.append(new Option(album.name, album.id));
+  lightroomAlbum.value = albums.some((a) => a.id === chosen) ? chosen : "";
+}
+
+/** Reads a finished result back out of OPFS as a File, ready to upload. */
+async function storedFile(item: QueueItem) {
+  const handle = await (await resultsDirectory()).getFileHandle(item.result!.storedAs);
+  const stored = await handle.getFile();
+  return new File([stored], item.result!.downloadAs, { type: item.result!.mime });
+}
+
+async function uploadItemToLightroom(item: QueueItem) {
+  if (!item.result) return;
+  try {
+    await lightroom.uploadAsset(await storedFile(item), lightroomAlbum.value || undefined);
+    notify(`Saved ${item.result.downloadAs} to Lightroom`);
+    await removeStoredResult(item);
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error));
+  }
+  renderLightroom();
+}
+
+async function uploadQueueToLightroom() {
+  const pending = queue.filter((item) => item.result);
+  if (!pending.length) return;
+  uploadingToLightroom = true;
+  setEditingDisabled(true);
+  renderLightroom();
+  let done = 0;
+  let failed = 0;
+  try {
+    for (const item of pending) {
+      if (!item.result) continue;
+      try {
+        await lightroom.uploadAsset(await storedFile(item), lightroomAlbum.value || undefined);
+        await removeStoredResult(item);
+        done++;
+      } catch (error) {
+        // One bad photo must not abandon the rest of the queue.
+        failed++;
+        notify(error instanceof Error ? error.message : String(error));
+      }
+      lightroomUploadQueue.textContent = `Saving to Lightroom… ${done + failed}/${pending.length}`;
+    }
+  } finally {
+    uploadingToLightroom = false;
+    lightroomUploadQueue.textContent = "Save finished photos to Lightroom";
+    setEditingDisabled(false);
+    renderLightroom();
+    renderQueue();
+  }
+  notify(failed ? `Saved ${done} to Lightroom, ${failed} failed` : `Saved ${done} to Lightroom`);
+}
+
+lightroomSignIn.addEventListener("click", () => {
+  lightroom.beginSignIn().catch((error) => notify(String(error)));
+});
+lightroomSignOut.addEventListener("click", () => {
+  lightroom.signOut();
+  renderLightroom();
+});
+lightroomCreateAlbum.addEventListener("click", () => {
+  const name = lightroomNewAlbum.value.trim();
+  if (!name) return notify("Give the album a name first");
+  void lightroom
+    .createAlbum(name)
+    .then(async (album) => {
+      lightroomNewAlbum.value = "";
+      await refreshAlbums();
+      lightroomAlbum.value = album.id;
+      notify(`Created album “${album.name}”`);
+    })
+    .catch((error) => notify(error instanceof Error ? error.message : String(error)));
+});
+lightroomUploadQueue.addEventListener("click", () => void uploadQueueToLightroom());
+
+lightroom
+  .completeSignIn()
+  .then(async (justSignedIn) => {
+    renderLightroom();
+    if (lightroom.signedIn()) await refreshAlbums();
+    if (justSignedIn) notify("Lightroom connected");
+  })
+  .catch((error) => {
+    renderLightroom();
+    notify(error instanceof Error ? error.message : String(error));
+  });
+
 initialize().catch((error) => {
   state.classList.add("error");
   state.lastChild!.textContent = "Engine failed to start";
   notify(String(error));
 });
 
-/* c8 ignore start -- production-only platform registration is covered by the offline production-browser test. */
-if ("serviceWorker" in navigator && import.meta.env.PROD) {
-  navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" }).catch((error) => notify(`Offline install failed: ${error}`));
+/* c8 ignore start -- platform registration is covered by the offline production-browser test. */
+if ("serviceWorker" in navigator) {
+  if (import.meta.env.PROD) {
+    navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" }).catch((error) => notify(`Offline install failed: ${error}`));
+  } else if (["localhost", "127.0.0.1"].includes(location.hostname)) {
+    Promise.all([
+      navigator.serviceWorker.getRegistrations().then((registrations) => Promise.all(registrations.map((registration) => registration.unregister()))),
+      caches.keys().then((names) => Promise.all(names.filter((name) => name.startsWith("spektra-mobile-")).map((name) => caches.delete(name)))),
+    ]).catch((error) => notify(`Local cache cleanup failed: ${error}`));
+  }
 }
 /* c8 ignore stop */

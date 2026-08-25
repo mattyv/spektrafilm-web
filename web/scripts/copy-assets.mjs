@@ -1,9 +1,11 @@
-import { cpSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import packageJson from "../package.json" with { type: "json" };
 
 const source = resolve("../data");
 const target = resolve("public/data");
+const serviceWorker = resolve("public/sw.js");
+writeFileSync(serviceWorker, readFileSync(serviceWorker, "utf8").replace(/const CACHE = "[^"]+";/, `const CACHE = "spektra-mobile-v${packageJson.version}";`));
 rmSync(target, { recursive: true, force: true });
 mkdirSync(target, { recursive: true });
 cpSync(resolve(source, "profiles"), resolve(target, "profiles"), { recursive: true });

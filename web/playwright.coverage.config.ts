@@ -13,9 +13,9 @@ export default defineConfig({
     launchOptions: { args: ["--enable-unsafe-webgpu"] },
   },
   webServer: {
-    command: "npm run build:wasm && npx vite --host 127.0.0.1 --port 4173",
+    command: "VITE_ADOBE_CLIENT_ID=test-client npm run build:wasm && VITE_ADOBE_CLIENT_ID=test-client npx vite --host 127.0.0.1 --port 4173",
     url: "http://127.0.0.1:4173",
     reuseExistingServer: false,
-    timeout: 2 * 60_000,
+    timeout: 5 * 60_000,
   },
 });

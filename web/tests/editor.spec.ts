@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const jpeg = readFileSync(new URL("../public/icon.jpg", import.meta.url));
+const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
 async function ready(page: import("@playwright/test").Page) {
   await page.goto("/");
@@ -115,6 +116,23 @@ test("exposes every engine section, undo, recipes, and attribution", async ({ pa
   ]) await expect(page.locator(`.credits a[href="${href}"]`)).toHaveCount(1);
 });
 
+test("switches the main screen to Traditional Chinese and remembers the choice", async ({ page }) => {
+  await ready(page);
+  await page.locator("#language").selectOption("zh-Hant");
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-Hant");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("讓底片重現生命。");
+  await expect(page.getByText("開啟照片", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "拍攝照片" })).toBeVisible();
+  await expect(page.getByText("開啟 RAW 檔案", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "參考品質" })).toBeVisible();
+  await expect(page.getByText("輸出格式", { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.locator("#language")).toHaveValue("zh-Hant");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("讓底片重現生命。");
+  await page.locator("#language").selectOption("en");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Bring your negatives to life.");
+});
+
 test("exposes remaining engine settings as controls instead of JSON", async ({ page }) => {
   await ready(page);
   await expect(page.locator("#expert-settings")).toHaveCount(0);
@@ -128,6 +146,23 @@ test("exposes remaining engine settings as controls instead of JSON", async ({ p
   await exact.press("Enter");
   await slider.dblclick();
   await expect(exact).toHaveValue("0");
+  const integerSettings = [
+    "film_render.grain.n_sub_layers",
+    "film_render.grain.seed",
+    "film_render.halation.halation_n_bounces",
+    "film_render.glare.seed",
+    "print_render.glare.seed",
+    "settings.lut_resolution",
+    "settings.preview_max_size",
+  ];
+  for (const path of integerSettings) {
+    await expect(page.locator(`[data-setting="${path}"][type="number"]`)).toHaveAttribute("step", "1");
+  }
+  const grainSeed = page.locator('[data-setting="film_render.grain.seed"][type="number"]');
+  await grainSeed.fill("12.5");
+  await grainSeed.dispatchEvent("change");
+  await expect(grainSeed).toHaveValue("13");
+  await expect(page.locator("#toast")).not.toContainText(/expected u\d+|invalid type/i);
   await page.locator('[data-setting="camera.diffusion_filter.active"]').check();
   await page.locator('[data-setting="camera.auto_exposure_method"]').selectOption("mean");
   const illuminant = page.locator('[data-setting="enlarger.illuminant"]');
@@ -431,7 +466,7 @@ test("reopens with the full local engine while offline", async ({ page, context 
   expect(cached).toEqual(expect.arrayContaining([
     expect.stringMatching(/^\/assets\/index-.*\.js$/),
     expect.stringMatching(/^\/assets\/engine-worker-.*\.js$/),
-    "/wasm/spektrafilm_web_bg.wasm",
+    `/wasm/${version}/spektrafilm_web_bg.wasm`,
   ]));
   await page.evaluate(async () => {
     const cache = await caches.open((await caches.keys())[0]);

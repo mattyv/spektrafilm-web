@@ -10,7 +10,9 @@ describe("deployment assets", () => {
     expect(headers).toMatch(/\/wasm\/\*\.wasm\s+Content-Type: application\/wasm/);
     const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
     const serviceWorker = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
+    const assetBuilder = readFileSync(new URL("../scripts/copy-assets.mjs", import.meta.url), "utf8");
     expect(serviceWorker).toContain(`spektra-mobile-v${version}`);
+    expect(assetBuilder).toContain("spektra-mobile-v${packageJson.version}");
     expect(serviceWorker).not.toContain("ignoreSearch: true");
     expect(serviceWorker).toContain("if (!response.ok && cached) return cached");
     expect(readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8"))
@@ -30,12 +32,18 @@ describe("deployment assets", () => {
     expect(assets).toContain("item.name !== packageJson.version");
     expect(serviceWorker).toContain("new Set(");
     expect(serviceWorker).toContain("if (!manifest.ok)");
-    expect(readFileSync(new URL("./main.ts", import.meta.url), "utf8"))
-      .toContain("`v${__APP_VERSION__}`");
+    const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+    expect(main).toContain("`v${__APP_VERSION__}`");
+    expect(main).toContain('["localhost", "127.0.0.1"].includes(location.hostname)');
+    expect(main).toContain("registration.unregister()");
     const playwrightConfig = readFileSync(new URL("../playwright.config.ts", import.meta.url), "utf8");
     expect(playwrightConfig).toContain("process.env.SPEKTRAFILM_E2E_BASE_URL");
+    const iphoneConfig = readFileSync(new URL("../playwright.iphone.config.ts", import.meta.url), "utf8");
+    expect(iphoneConfig).toContain('browserName: "webkit"');
     const deploy = readFileSync(new URL("../scripts/deploy-cloudflare.sh", import.meta.url), "utf8");
     expect(deploy).toContain("npm run release:verify");
+    expect(deploy).toContain("https://spektra-mobile.pages.dev/sw.js");
+    expect(deploy).toContain('spektra-mobile-v$VERSION');
     expect(deploy).toContain("SPEKTRAFILM_E2E_BASE_URL=https://spektra-mobile.pages.dev");
     expect(deploy).toContain("auto-rotates portrait DNG pixels and exports them once");
     expect(deploy).toContain("renders a mobile DNG after switching print off and back on");

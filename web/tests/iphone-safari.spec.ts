@@ -5,6 +5,58 @@ import { fileURLToPath } from "node:url";
 const dng = process.env.SPEKTRAFILM_E2E_DNG ?? fileURLToPath(new URL("./fixtures/canon-a410-chdk.dng", import.meta.url));
 const leicaDng = fileURLToPath(new URL("./fixtures/L1002126.DNG", import.meta.url));
 
+async function displayedTone(page: import("@playwright/test").Page, tone: "blacks" | "shadows" | "highlights" | "whites") {
+  return page.locator("#preview-image").evaluate(async (image: HTMLImageElement, selectedTone) => {
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext("2d")!;
+    context.drawImage(image, 0, 0);
+    const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    const tones = [];
+    for (let offset = 0; offset < data.length; offset += 4) {
+      tones.push(0.2126 * data[offset] + 0.7152 * data[offset + 1] + 0.0722 * data[offset + 2]);
+    }
+    tones.sort((left, right) => left - right);
+    const quarter = Math.floor(tones.length / 4);
+    const selected = selectedTone === "blacks" || selectedTone === "shadows"
+      ? tones.slice(0, quarter)
+      : tones.slice(-quarter);
+    return selected.reduce((sum, value) => sum + value, 0) / selected.length;
+  }, tone);
+}
+
+function encodedDimensions(bytes: Buffer, format: "jpeg" | "png" | "tiff") {
+  if (format === "png") return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+  if (format === "jpeg") {
+    for (let offset = 2; offset < bytes.length;) {
+      if (bytes[offset++] !== 0xff) continue;
+      const marker = bytes[offset++];
+      if (marker >= 0xc0 && marker <= 0xc3) return { height: bytes.readUInt16BE(offset + 3), width: bytes.readUInt16BE(offset + 5) };
+      offset += bytes.readUInt16BE(offset);
+    }
+    throw new Error("JPEG dimensions not found");
+  }
+  const littleEndian = bytes.toString("ascii", 0, 2) === "II";
+  const u16 = (offset: number) => littleEndian ? bytes.readUInt16LE(offset) : bytes.readUInt16BE(offset);
+  const u32 = (offset: number) => littleEndian ? bytes.readUInt32LE(offset) : bytes.readUInt32BE(offset);
+  const directory = u32(4);
+  let width = 0;
+  let height = 0;
+  for (let entry = 0; entry < u16(directory); entry++) {
+    const offset = directory + 2 + entry * 12;
+    const tag = u16(offset);
+    if (tag === 256 || tag === 257) {
+      const value = u16(offset + 2) === 3 ? u16(offset + 8) : u32(offset + 8);
+      if (tag === 256) width = value;
+      else height = value;
+    }
+  }
+  if (!width || !height) throw new Error("TIFF dimensions not found");
+  return { width, height };
+}
+
 test("fits the iPhone Safari viewport and exposes distinct photo and RAW filters", async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(navigator, "mediaDevices", {
     configurable: true,
@@ -25,6 +77,10 @@ test("fits the iPhone Safari viewport and exposes distinct photo and RAW filters
   await expect(page.locator("body")).toHaveCSS("min-width", "320px");
   expect((await page.locator("body").boundingBox())!.width).toBeLessThanOrEqual(393);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(393);
+  await page.locator("#language").selectOption("zh-Hant");
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-Hant");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("讓底片重現生命。");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(393);
 });
 
 test("double-taps a slider to reset it on iPhone", async ({ page }) => {
@@ -37,6 +93,25 @@ test("double-taps a slider to reset it on iPhone", async ({ page }) => {
   await expect(exposure).toHaveValue("0");
   await expect(page.locator("#exposure-output")).toHaveText("0.0 EV");
 });
+
+for (const control of ["blacks", "shadows", "highlights", "whites"] as const) {
+  test(`positive ${control} brightens ${control} in iPhone Reference Quality`, async ({ page }) => {
+    test.setTimeout(10 * 60_000);
+    await page.goto("/");
+    await expect(page.locator("#engine-state")).toContainText("Local engine", { timeout: 60_000 });
+    await page.locator("#file-input").setInputFiles(dng);
+    await expect(page.getByRole("button", { name: "Show before" })).toBeVisible({ timeout: 3 * 60_000 });
+    await page.getByRole("button", { name: "Reference Quality", exact: true }).click();
+    await page.locator(".controls > details > summary").click();
+    const render = async (value: number) => {
+      const previous = await page.locator("#preview-image").getAttribute("src");
+      await page.locator(`#${control}`).fill(String(value));
+      await expect.poll(() => page.locator("#preview-image").getAttribute("src"), { timeout: 3 * 60_000 }).not.toBe(previous);
+      return displayedTone(page, control);
+    };
+    expect(await render(100)).toBeGreaterThan(await render(-100));
+  });
+}
 
 test("renders a mobile DNG after switching print off and back on", async ({ page }) => {
   test.setTimeout(10 * 60_000);
@@ -60,40 +135,43 @@ test("renders a mobile DNG after switching print off and back on", async ({ page
   await expect(page.locator("#preview-image")).toBeVisible();
 });
 
-test("exports the full-size Leica DNG in Reference Quality without crashing iPhone", async ({ page }) => {
+test("applies Auto white balance to a large RAW without a second image decode", async ({ page }) => {
   test.setTimeout(10 * 60_000);
   await page.goto("/");
   await expect(page.locator("#engine-state")).toContainText("Local engine", { timeout: 60_000 });
   await page.locator("#file-input").setInputFiles(leicaDng);
   await page.getByRole("button", { name: /^Use safe/ }).click();
-  await page.getByRole("button", { name: "Reference Quality" }).click();
-  await page.locator("#output-format").selectOption("jpeg");
-  const pending = page.waitForEvent("download");
-  await page.locator("#export").click();
-  expect((await pending).suggestedFilename()).toBe("L1002126-spektra.jpg");
+  await expect(page.getByRole("button", { name: "Show before" })).toBeVisible({ timeout: 3 * 60_000 });
+  const previous = await page.locator("#preview-image").getAttribute("src");
+  await page.locator(".controls > details > summary").click();
+  await page.locator("#white-balance-mode").selectOption("auto");
+  await expect.poll(() => page.locator("#preview-image").getAttribute("src"), { timeout: 3 * 60_000 }).not.toBe(previous);
+  await expect(page.locator("#engine-state")).toContainText("Local engine");
   await expect(page.locator("#toast")).not.toContainText(/unreachable|memory/i);
 });
 
-test("keeps a Leica Fast GPU export inside the real iPhone memory budget", async ({ page }, testInfo) => {
-  test.setTimeout(10 * 60_000);
+test("keeps every Leica renderer and output format inside the iPhone memory budget", async ({ page }) => {
+  test.setTimeout(30 * 60_000);
   await page.goto("/");
   await expect(page.locator("#engine-state")).toContainText("Local engine", { timeout: 60_000 });
   await page.locator("#file-input").setInputFiles(leicaDng);
   await page.getByRole("button", { name: /^Use safe/ }).click();
-  await expect(page.locator("#preview-meta")).toContainText("Fast 2.0 MP");
-  await page.locator("#output-format").selectOption("jpeg");
-  const pending = page.waitForEvent("download");
-  await page.locator("#export").click();
-  const download = await pending;
-  const exported = testInfo.outputPath("leica-fast.jpg");
-  await download.saveAs(exported);
-  const source = `data:image/jpeg;base64,${readFileSync(exported).toString("base64")}`;
-  const pixels = await page.evaluate(async (url) => {
-    const image = new Image();
-    image.src = url;
-    await image.decode();
-    return image.naturalWidth * image.naturalHeight;
-  }, source);
-  expect(pixels).toBeLessThanOrEqual(2_100_000);
-  await expect(page.locator("#toast")).not.toContainText(/unreachable|memory/i);
+  await expect(page.locator("#preview-meta")).toContainText("Fast 2.0 MP · Reference 1.0 MP");
+
+  for (const mode of [{ button: "Fast GPU", maxPixels: 2_100_000 }, { button: "Reference Quality", maxPixels: 1_100_000 }]) {
+    await page.getByRole("button", { name: mode.button, exact: true }).click();
+    for (const format of ["jpeg", "png", "tiff"] as const) {
+      await page.locator("#output-format").selectOption(format);
+      const pending = page.waitForEvent("download");
+      await page.locator("#export").click();
+      const bytes = readFileSync(await (await pending).path() as string);
+      const dimensions = encodedDimensions(bytes, format);
+      expect(dimensions.width * dimensions.height, `${mode.button} ${format}`).toBeLessThanOrEqual(mode.maxPixels);
+      await expect.poll(
+        () => page.locator("#engine-state").textContent(),
+        { message: `${mode.button} ${format} keeps the worker alive`, timeout: 60_000 },
+      ).toContain("Local engine");
+      await expect(page.locator("#toast")).not.toContainText(/unreachable|memory/i);
+    }
+  }
 });

@@ -27,6 +27,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-v
 .engine-state span { width: 8px; aspect-ratio: 1; border-radius: 50%; background: var(--gold); box-shadow: 0 0 12px var(--gold); }
 .engine-state.ready span { background: var(--green); box-shadow: 0 0 12px var(--green); }
 .engine-state.error span { background: var(--red); box-shadow: 0 0 12px var(--red); }
+.language-picker { min-height: 36px; margin-bottom: 10px; padding-inline: 8px; font-size: 12px; }
 .quiet { border: 1px solid var(--line); color: inherit; background: transparent; border-radius: 7px; padding: 9px 13px; }
 
 .workspace { height: calc(100vh - 68px); display: grid; grid-template-columns: minmax(0, 1fr) 350px; }
