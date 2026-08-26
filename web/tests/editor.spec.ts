@@ -64,7 +64,9 @@ async function decodedDownload(page: import("@playwright/test").Page, download: 
     for (let offset = 0; offset < pixels.length; offset += 4) {
       channelSpread += Math.abs(pixels[offset] - pixels[offset + 1]) + Math.abs(pixels[offset + 1] - pixels[offset + 2]);
     }
-    return { width: image.naturalWidth, height: image.naturalHeight, channelSpread: channelSpread / (pixels.length / 4) };
+    let hash = 2166136261;
+    for (const byte of pixels) hash = Math.imul(hash ^ byte, 16777619);
+    return { width: image.naturalWidth, height: image.naturalHeight, channelSpread: channelSpread / (pixels.length / 4), hash: hash >>> 0 };
   }, url);
 }
 
@@ -588,6 +590,36 @@ test("exports the selected film pipeline and invalidates stale queue results", a
   await expect(page.locator(".queue-save", { hasText: "Save" })).toHaveCount(1, { timeout: 3 * 60_000 });
   await page.locator("#film-stock").selectOption("kodak_portra_400");
   await expect(page.locator(".queue-save", { hasText: "Save" })).toHaveCount(0);
+});
+
+test("commits an in-progress adjustment before JPEG export", async ({ page }) => {
+  await ready(page);
+  await page.locator("#photo-input").setInputFiles({ name: "pending-adjustment.jpg", mimeType: "image/jpeg", buffer: jpeg });
+  await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+  await page.locator("#output-format").selectOption("jpeg");
+
+  for (const mode of ["Fast GPU", "Reference Quality"]) {
+    await page.getByRole("button", { name: mode, exact: true }).click();
+    await page.locator("#vignette-amount").evaluate((control: HTMLInputElement) => {
+      control.value = "0";
+      control.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const baselinePending = page.waitForEvent("download");
+    await page.locator("#export").click();
+    const baseline = await decodedDownload(page, await baselinePending);
+    await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+
+    await page.locator("#vignette-amount").evaluate((control: HTMLInputElement) => {
+      control.value = "-100";
+      control.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const adjustedPending = page.waitForEvent("download");
+    await page.locator("#export").click();
+    const adjusted = await decodedDownload(page, await adjustedPending);
+
+    expect(adjusted.hash, mode).not.toBe(baseline.hash);
+    await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+  }
 });
 
 test("exports the same photo twice without reopening it", async ({ page }) => {

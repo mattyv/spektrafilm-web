@@ -1541,6 +1541,7 @@ document.querySelector<HTMLInputElement>("#import-recipe")!.addEventListener("ch
 exportButton.addEventListener("click", async () => {
   const item = queue.find((candidate) => candidate.id === selectedId);
   if (!item) return;
+  configure();
   window.clearTimeout(previewTimer);
   exportButton.disabled = true;
   cancelExportButton.hidden = false;
@@ -1595,6 +1596,8 @@ cancelBatchButton.addEventListener("click", () => {
 exportQueueButton.addEventListener("click", async () => {
   const items = queue.filter(isProcessable);
   if (!items.length) return;
+  configure();
+  window.clearTimeout(previewTimer);
   batchRunning = true;
   setEditingDisabled(true);
   cancelBatch = false;
