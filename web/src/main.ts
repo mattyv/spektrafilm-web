@@ -1100,6 +1100,10 @@ function invalidateProcessedPreviews() {
   showingAfter = false;
 }
 
+function invalidateStoredResults(items = queue) {
+  for (const item of items) if (item.result) void removeStoredResult(item).catch(() => undefined);
+}
+
 function scheduleLivePreview() {
   window.clearTimeout(previewTimer);
   previewTimer = window.setTimeout(() => void refreshLivePreview(), 350);
@@ -1176,16 +1180,12 @@ async function shareStoredResult(item: QueueItem) {
 
 async function removeStoredResult(item: QueueItem) {
   if (!item.result) return;
-  // Each export stored its own file, so reclaim every result this item produced, not just
-  // the latest one.
-  const directory = await resultsDirectory();
-  const prefix = `${item.id}-`;
-  for await (const name of (directory as unknown as { keys(): AsyncIterable<string> }).keys()) {
-    if (name.startsWith(prefix)) await directory.removeEntry(name).catch(() => undefined);
-  }
+  const storedAs = item.result.storedAs;
   item.result = undefined;
   item.saved = false;
   renderQueue();
+  const directory = await resultsDirectory();
+  await directory.removeEntry(storedAs).catch(() => undefined);
 }
 
 async function discardItem(item: QueueItem) {
@@ -1298,7 +1298,9 @@ document.querySelector("#drop-zone")!.addEventListener("drop", (event) => {
 
 document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((button) => {
   button.addEventListener("click", () => {
-    exportMode = button.dataset.mode as "reference" | "fast";
+    const nextMode = button.dataset.mode as "reference" | "fast";
+    if (nextMode !== exportMode) invalidateStoredResults();
+    exportMode = nextMode;
     document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
     exportButton.textContent = labelText(exportMode === "reference" ? "Export reference quality" : "Export with Fast GPU");
     const selected = queue.find((item) => item.id === selectedId);
@@ -1316,6 +1318,7 @@ document.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach((rang
     range.dispatchEvent(new Event("change", { bubbles: true }));
   };
   range.addEventListener("input", () => {
+    if (range.id === "jpeg-quality") invalidateStoredResults();
     if (range.id !== "jpeg-quality" && !range.dataset.editing) {
       pushUndo();
       range.dataset.editing = "true";
@@ -1383,9 +1386,11 @@ function configure() {
   const selected = queue.find((item) => item.id === selectedId);
   if (document.querySelector<HTMLSelectElement>("#adjustment-scope")!.value === "photo" && selected) {
     selected.recipe = cloneRecipe(recipe);
+    invalidateStoredResults([selected]);
   } else {
     if (selected) selected.recipe = undefined;
     sharedRecipe = cloneRecipe(recipe);
+    invalidateStoredResults();
   }
   queueConfiguration(recipe);
   scheduleLivePreview();
@@ -1396,6 +1401,7 @@ rotateButton.addEventListener("click", () => {
   const item = queue.find((candidate) => candidate.id === selectedId);
   if (!item || !isProcessable(item)) return;
   item.rotation = (item.rotation + 1) % 4;
+  invalidateStoredResults([item]);
   invalidateProcessedPreviews();
   renderSelected(item);
   renderQueue();
@@ -1449,6 +1455,7 @@ for (const id of ["film-stock", "print-stock", "auto-exposure", "scan-target", "
 
 for (const id of ["raw-white-balance", "raw-demosaic"]) document.querySelector(`#${id}`)!.addEventListener("change", async () => {
   try {
+    invalidateStoredResults(queue.filter((candidate) => isRaw(candidate.file)));
     queueConfiguration(currentRecipe());
     invalidateProcessedPreviews();
     showingAfter = false;
@@ -1474,6 +1481,7 @@ for (const id of ["raw-white-balance", "raw-demosaic"]) document.querySelector(`
 });
 
 document.querySelector<HTMLSelectElement>("#output-format")!.addEventListener("change", (event) => {
+  invalidateStoredResults();
   document.querySelector<HTMLElement>("#quality-label")!.hidden = (event.currentTarget as HTMLSelectElement).value !== "jpeg";
 });
 
@@ -1483,6 +1491,7 @@ undoButton.addEventListener("click", () => {
   const selected = queue.find((item) => item.id === selectedId);
   if (document.querySelector<HTMLSelectElement>("#adjustment-scope")!.value === "photo" && selected) selected.recipe = cloneRecipe(recipe);
   else sharedRecipe = cloneRecipe(recipe);
+  invalidateStoredResults(document.querySelector<HTMLSelectElement>("#adjustment-scope")!.value === "photo" && selected ? [selected] : queue);
   showRecipe(recipe);
   undoButton.disabled = history.length === 0;
 });
@@ -1504,6 +1513,7 @@ savedRecipes.addEventListener("change", () => {
   if (!recipe) return;
   pushUndo();
   sharedRecipe = cloneRecipe(recipe);
+  invalidateStoredResults();
   showRecipe(recipe);
 });
 
@@ -1521,6 +1531,7 @@ document.querySelector<HTMLInputElement>("#import-recipe")!.addEventListener("ch
     const recipe = parseRecipe(await file.text());
     pushUndo();
     sharedRecipe = cloneRecipe(recipe);
+    invalidateStoredResults();
     showRecipe(recipe);
   } catch (error) {
     notify(error instanceof Error ? error.message : String(error));

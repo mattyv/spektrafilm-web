@@ -54,7 +54,17 @@ async function decodedDownload(page: import("@playwright/test").Page, download: 
     const image = new Image();
     image.src = source;
     await image.decode();
-    return { width: image.naturalWidth, height: image.naturalHeight };
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext("2d")!;
+    context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let channelSpread = 0;
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+      channelSpread += Math.abs(pixels[offset] - pixels[offset + 1]) + Math.abs(pixels[offset + 1] - pixels[offset + 2]);
+    }
+    return { width: image.naturalWidth, height: image.naturalHeight, channelSpread: channelSpread / (pixels.length / 4) };
   }, url);
 }
 
@@ -557,6 +567,27 @@ test("runs Fast and Reference exports and keeps batch results separate", async (
   await page.locator(".queue-save", { hasText: "Save" }).first().click();
   expect((await saved).suggestedFilename()).toMatch(/-spektra\.jpg$/);
   await expect(page.locator(".queue-save", { hasText: "Save" })).toHaveCount(1);
+});
+
+test("exports the selected film pipeline and invalidates stale queue results", async ({ page }) => {
+  await ready(page);
+  await page.locator("#photo-input").setInputFiles({ name: "film.jpg", mimeType: "image/jpeg", buffer: jpeg });
+  await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+  await page.locator("#film-stock").selectOption("kodak_trix");
+  await page.locator("#print-stock").selectOption("kodak_2302");
+  await page.locator("#output-format").selectOption("jpeg");
+
+  for (const mode of ["Fast GPU", "Reference Quality"]) {
+    await page.getByRole("button", { name: mode, exact: true }).click();
+    const pending = page.waitForEvent("download");
+    await page.locator("#export").click();
+    expect((await decodedDownload(page, await pending)).channelSpread, mode).toBeLessThan(3);
+  }
+
+  await page.locator("#export-queue").click();
+  await expect(page.locator(".queue-save", { hasText: "Save" })).toHaveCount(1, { timeout: 3 * 60_000 });
+  await page.locator("#film-stock").selectOption("kodak_portra_400");
+  await expect(page.locator(".queue-save", { hasText: "Save" })).toHaveCount(0);
 });
 
 test("exports the same photo twice without reopening it", async ({ page }) => {

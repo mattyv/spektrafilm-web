@@ -1,7 +1,7 @@
 {
   "name": "spektra-mobile",
   "private": true,
-  "version": "0.2.20",
+  "version": "0.2.21",
   "type": "module",
   "scripts": {
     "build:wasm": "wasm-pack build ../crates/spektrafilm-web --target web --out-dir ../../web/public/wasm --release && npm run typecheck:bindings && npm run build:wasm:threaded && npm run build:assets",
