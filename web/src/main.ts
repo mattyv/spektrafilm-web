@@ -233,6 +233,33 @@ const chineseLabels: Record<string, string> = {
   "Open more": "開啟更多",
   "Open photos": "開啟照片",
   "Open RAW files": "開啟 RAW 檔案",
+  Undo: "復原",
+  Rotate: "旋轉",
+  "Reset view": "重設檢視",
+  "Before / After": "前後比較",
+  "Use photo": "使用照片",
+  Cancel: "取消",
+  "Pick neutral point": "選取中性點",
+  "Save recipe": "儲存配方",
+  "Export recipe": "匯出配方",
+  "Export with Fast GPU": "使用快速 GPU 匯出",
+  "Export reference quality": "以參考品質匯出",
+  "Processing full pipeline…": "正在處理完整流程…",
+  "Cancel current export": "取消目前匯出",
+  "Export safe queue": "匯出安全佇列",
+  "Stop after current": "完成目前項目後停止",
+  "Connect Lightroom": "連接 Lightroom",
+  Create: "建立",
+  "Save finished photos to Lightroom": "將完成照片儲存到 Lightroom",
+  Disconnect: "中斷連接",
+  Save: "儲存",
+  Share: "分享",
+  Remove: "移除",
+  "Show before": "顯示原圖",
+  "Show after": "顯示效果",
+  "Render after": "渲染效果",
+  "Rendering after…": "正在渲染效果…",
+  "Use safe": "使用安全尺寸",
   Negative: "底片",
   "Film stock": "底片種類",
   "Exposure compensation": "曝光補償",
@@ -298,7 +325,7 @@ function translateLabels(language: Language) {
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const parent = (node as Text).parentElement;
-      return node.textContent?.trim() && parent?.closest("label, summary, .eyebrow") && !parent.closest("select, option, output")
+      return node.textContent?.trim() && parent?.closest("label, summary, .eyebrow, button") && !parent.closest("select, option, output")
         ? NodeFilter.FILTER_ACCEPT
         : NodeFilter.FILTER_REJECT;
     },
@@ -908,7 +935,7 @@ function renderSelected(item: QueueItem) {
     if (!electron && item.inspection.requiresResize && !item.approvedScale) {
       const approve = document.createElement("button");
       approve.type = "button";
-      approve.textContent = `Use safe ${selectedSafe.toFixed(1)} MP`;
+      approve.textContent = `${labelText("Use safe")} ${selectedSafe.toFixed(1)} MP`;
       approve.addEventListener("click", () => {
         item.approvedScale = Math.sqrt(selectedSafe / item.inspection!.megapixels);
         renderSelected(item);
@@ -925,8 +952,8 @@ function renderSelected(item: QueueItem) {
   rotateButton.disabled = batchRunning || !isProcessable(item);
   whiteBalancePicker.disabled = batchRunning || !isProcessable(item);
   compareButton.textContent = item.processedUrl
-    ? showingAfter ? "Show before" : "Show after"
-    : "Render after";
+    ? labelText(showingAfter ? "Show before" : "Show after")
+    : labelText("Render after");
   if (!item.processedUrl && isProcessable(item) && !previewRendering) scheduleLivePreview();
 }
 
@@ -953,14 +980,14 @@ function renderQueue() {
       const save = document.createElement("button");
       save.type = "button";
       save.className = "queue-save";
-      save.textContent = "Save";
+      save.textContent = labelText("Save");
       save.addEventListener("click", () => void saveStoredResult(item));
       card.append(save);
       if ("share" in navigator) {
         const share = document.createElement("button");
         share.type = "button";
         share.className = "queue-save";
-        share.textContent = "Share";
+        share.textContent = labelText("Share");
         share.addEventListener("click", () => void shareStoredResult(item));
         card.append(share);
       }
@@ -978,7 +1005,7 @@ function renderQueue() {
     discard.type = "button";
     discard.className = "queue-discard";
     discard.ariaLabel = `Remove ${item.file.name}`;
-    discard.textContent = "Remove";
+    discard.textContent = labelText("Remove");
     discard.addEventListener("click", () => void discardItem(item));
     card.append(discard);
     return card;
@@ -1273,7 +1300,7 @@ document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((button) => 
   button.addEventListener("click", () => {
     exportMode = button.dataset.mode as "reference" | "fast";
     document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
-    exportButton.textContent = exportMode === "reference" ? "Export reference quality" : "Export with Fast GPU";
+    exportButton.textContent = labelText(exportMode === "reference" ? "Export reference quality" : "Export with Fast GPU");
     const selected = queue.find((item) => item.id === selectedId);
     if (selected) renderSelected(selected);
   });
@@ -1380,7 +1407,7 @@ compareButton.addEventListener("click", async () => {
   if (!item || !isProcessable(item)) return;
   if (!item.processedUrl) {
     compareButton.disabled = true;
-    compareButton.textContent = "Rendering after…";
+    compareButton.textContent = labelText("Rendering after…");
     try {
       await configuration;
       setProcessedPreview(item, await renderAfter(item));
@@ -1508,7 +1535,7 @@ exportButton.addEventListener("click", async () => {
   cancelExportButton.hidden = false;
   exportProgress.hidden = false;
   setExportProgress(0, "Preparing export…");
-  exportButton.textContent = "Processing full pipeline…";
+  exportButton.textContent = labelText("Processing full pipeline…");
   const generation = engineGeneration;
   try {
     await configuration;
@@ -1526,7 +1553,7 @@ exportButton.addEventListener("click", async () => {
     exportActivityTimer = 0;
     cancelExportButton.hidden = true;
     exportProgress.hidden = true;
-    exportButton.textContent = exportMode === "fast" ? "Export with Fast GPU" : "Export reference quality";
+    exportButton.textContent = labelText(exportMode === "fast" ? "Export with Fast GPU" : "Export reference quality");
     if (generation === engineGeneration) {
       if (webkit) {
         const selected = queue.find((candidate) => candidate.id === selectedId);
@@ -1665,7 +1692,7 @@ async function uploadQueueToLightroom() {
     }
   } finally {
     uploadingToLightroom = false;
-    lightroomUploadQueue.textContent = "Save finished photos to Lightroom";
+    lightroomUploadQueue.textContent = labelText("Save finished photos to Lightroom");
     setEditingDisabled(false);
     renderLightroom();
     renderQueue();

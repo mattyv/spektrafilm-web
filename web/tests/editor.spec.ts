@@ -136,6 +136,19 @@ test("switches the main screen to Traditional Chinese and remembers the choice",
     "掃描目標", "輸出色彩", "顆粒", "光暈", "銳利度", "校正水平", "裁切預設",
     "白色邊框", "暈影量", "套用調整", "JPEG 品質",
   ]) await expect(page.locator("label").filter({ hasText: label }).first()).toBeVisible();
+  for (const [id, text] of [
+    ["undo", "復原"], ["rotate", "旋轉"], ["reset-view", "重設檢視"], ["compare", "前後比較"],
+    ["camera-capture", "使用照片"], ["camera-cancel", "取消"], ["white-balance-picker", "選取中性點"],
+    ["save-recipe", "儲存配方"], ["export-recipe", "匯出配方"], ["export", "使用快速 GPU 匯出"],
+    ["cancel-export", "取消目前匯出"], ["export-queue", "匯出安全佇列"], ["cancel-batch", "完成目前項目後停止"],
+    ["lightroom-signin", "連接 Lightroom"], ["lightroom-create-album", "建立"],
+    ["lightroom-upload-queue", "將完成照片儲存到 Lightroom"], ["lightroom-signout", "中斷連接"],
+  ]) await expect(page.locator(`#${id}`)).toHaveText(text);
+  await page.locator("#photo-input").setInputFiles({ name: "中文按鈕.jpg", mimeType: "image/jpeg", buffer: jpeg });
+  await expect(page.locator(".queue-discard")).toHaveText("移除");
+  await expect(page.locator("#compare")).toHaveText(/渲染效果|顯示原圖/, { timeout: 60_000 });
+  await page.locator("#export-queue").click();
+  await expect(page.locator(".queue-save").first()).toHaveText("儲存", { timeout: 60_000 });
   await page.reload();
   await expect(page.locator("#language")).toHaveValue("zh-Hant");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("讓底片重現生命。");
