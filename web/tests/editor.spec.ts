@@ -126,11 +126,22 @@ test("switches the main screen to Traditional Chinese and remembers the choice",
   await expect(page.getByText("開啟 RAW 檔案", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "參考品質" })).toBeVisible();
   await expect(page.getByText("輸出格式", { exact: true })).toBeVisible();
+  await page.locator(".controls > details > summary").click();
+  await expect(page.locator("#film-stock")).toHaveValue("kodak_portra_400");
+  await expect(page.locator("#film-stock option:checked")).toHaveText("Portra 400");
+  for (const label of [
+    "底片種類", "曝光補償", "相紙種類", "色溫", "相紙曝光", "相紙對比",
+    "白平衡", "RAW 白平衡", "RAW 去馬賽克", "溫度", "色調", "對比",
+    "高光", "陰影", "白色", "黑色", "飽和度", "自然飽和度", "清晰度", "去霧",
+    "掃描目標", "輸出色彩", "顆粒", "光暈", "銳利度", "校正水平", "裁切預設",
+    "白色邊框", "暈影量", "套用調整", "JPEG 品質",
+  ]) await expect(page.locator("label").filter({ hasText: label }).first()).toBeVisible();
   await page.reload();
   await expect(page.locator("#language")).toHaveValue("zh-Hant");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("讓底片重現生命。");
   await page.locator("#language").selectOption("en");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Bring your negatives to life.");
+  await expect(page.locator("label").filter({ hasText: "Film stock" }).first()).toBeVisible();
 });
 
 test("exposes remaining engine settings as controls instead of JSON", async ({ page }) => {

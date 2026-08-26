@@ -229,10 +229,99 @@ const translations = {
   },
 } as const;
 
+const chineseLabels: Record<string, string> = {
+  "Open more": "開啟更多",
+  "Open photos": "開啟照片",
+  "Open RAW files": "開啟 RAW 檔案",
+  Negative: "底片",
+  "Film stock": "底片種類",
+  "Exposure compensation": "曝光補償",
+  Exposure: "曝光",
+  Print: "相紙",
+  "Print stock": "相紙種類",
+  Warmth: "色溫",
+  "Print exposure": "相紙曝光",
+  "Print contrast": "相紙對比",
+  "Advanced controls": "進階控制",
+  Light: "光線",
+  "White balance": "白平衡",
+  "RAW white balance": "RAW 白平衡",
+  "RAW demosaic": "RAW 去馬賽克",
+  Temperature: "溫度",
+  Tint: "色調",
+  Contrast: "對比",
+  Highlights: "高光",
+  Shadows: "陰影",
+  Whites: "白色",
+  Blacks: "黑色",
+  Saturation: "飽和度",
+  Vibrance: "自然飽和度",
+  Clarity: "清晰度",
+  Dehaze: "去霧",
+  "Film effects": "底片效果",
+  "Auto exposure": "自動曝光",
+  "Scan target": "掃描目標",
+  "Output colour": "輸出色彩",
+  "Gamut lightness compression": "色域亮度壓縮",
+  "Lightness threshold": "亮度閾值",
+  "Lightness limit": "亮度上限",
+  "Lightness power": "亮度強度",
+  Grain: "顆粒",
+  Halation: "光暈",
+  "Halation size": "光暈大小",
+  "Light scatter": "光線散射",
+  "Scatter size": "散射大小",
+  "Highlight boost": "高光增強",
+  Sharpness: "銳利度",
+  Composition: "構圖",
+  Straighten: "校正水平",
+  "Crop preset": "裁切預設",
+  "Crop size": "裁切大小",
+  "Crop horizontal": "水平裁切",
+  "Crop vertical": "垂直裁切",
+  "White border": "白色邊框",
+  "Post-crop vignette": "裁切後暈影",
+  Amount: "暈影量",
+  Midpoint: "中點",
+  Roundness: "圓度",
+  Feather: "羽化",
+  "Apply adjustments": "套用調整",
+  "Super advanced": "專業進階",
+  "Import recipe": "匯入配方",
+  "Output format": "輸出格式",
+  "JPEG quality": "JPEG 品質",
+  Album: "相簿",
+};
+
+const originalLabelText = new WeakMap<Text, string>();
+function translateLabels(language: Language) {
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = (node as Text).parentElement;
+      return node.textContent?.trim() && parent?.closest("label, summary, .eyebrow") && !parent.closest("select, option, output")
+        ? NodeFilter.FILTER_ACCEPT
+        : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const nodes: Text[] = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode as Text);
+  for (const node of nodes) {
+    const original = originalLabelText.get(node) ?? node.data.trim();
+    originalLabelText.set(node, original);
+    const text = language === "zh-Hant" ? chineseLabels[original] ?? original : original;
+    node.data = node.data.replace(node.data.trim(), text);
+  }
+}
+
+function labelText(text: string) {
+  return document.documentElement.lang === "zh-Hant" ? chineseLabels[text] ?? text : text;
+}
+
 const languageSelect = document.querySelector<HTMLSelectElement>("#language")!;
 function applyLanguage(language: Language) {
   document.documentElement.lang = language;
   languageSelect.value = language;
+  translateLabels(language);
   for (const [key, text] of Object.entries(translations[language])) {
     document.querySelectorAll<HTMLElement>(`[data-i18n="${key}"]`).forEach((element) => element.textContent = text);
   }
@@ -581,6 +670,7 @@ function renderSuperAdvanced() {
     }
     superAdvanced.append(label);
   }
+  translateLabels(document.documentElement.lang === "zh-Hant" ? "zh-Hant" : "en");
 }
 
 function setRange(id: string, value: number) {
@@ -708,7 +798,7 @@ function showRecipe(recipe: Recipe) {
   for (const id of ["crop-scale", "crop-x", "crop-y", "border"]) setRange(id, Number(settings.composition[id.replace("crop-", "crop_")]));
   for (const id of ["amount", "midpoint", "roundness", "feather", "highlights"]) setRange(`vignette-${id}`, Number(settings.composition[`vignette_${id}`]));
   document.querySelector<HTMLInputElement>("#auto-exposure")!.checked = Boolean(settings.camera.auto_exposure);
-  document.querySelector("#exposure-label")!.textContent = settings.camera.auto_exposure ? "Exposure compensation" : "Exposure";
+  document.querySelector("#exposure-label")!.textContent = labelText(settings.camera.auto_exposure ? "Exposure compensation" : "Exposure");
   document.querySelector<HTMLSelectElement>("#scan-target")!.value = settings.io.scan_film ? "film" : "print";
   document.querySelector<HTMLSelectElement>("#output-colour")!.value = settings.io.output_color_space;
   const lightness = settings.io.output_gamut_compress.lightness_compression as number[] | null;
@@ -1317,8 +1407,9 @@ for (const id of ["film-stock", "print-stock", "auto-exposure", "scan-target", "
         document.querySelector<HTMLSelectElement>("#print-stock")!.value === "none" ? "film" : "print";
     }
     if (id === "auto-exposure") {
-      document.querySelector("#exposure-label")!.textContent =
-        document.querySelector<HTMLInputElement>("#auto-exposure")!.checked ? "Exposure compensation" : "Exposure";
+      document.querySelector("#exposure-label")!.textContent = labelText(
+        document.querySelector<HTMLInputElement>("#auto-exposure")!.checked ? "Exposure compensation" : "Exposure",
+      );
     }
     if (id === "gamut-lightness-active") setGamutLightnessEnabled(document.querySelector<HTMLInputElement>("#gamut-lightness-active")!.checked);
     configure();
