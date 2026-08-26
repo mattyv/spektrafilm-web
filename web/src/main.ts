@@ -842,10 +842,10 @@ async function addFiles(files: File[]) {
   for (const item of additions) {
     try {
       const bytes = await item.file.arrayBuffer();
-      item.sourceBytes = bytes.slice(0);
+      if (isRaw(item.file)) item.sourceBytes = bytes.slice(0);
       item.inspection = await askEngine({ type: "inspect", bytes, limits: desktop ? desktopLimits : undefined }, [bytes]);
       if (isRaw(item.file)) {
-        const rawBytes = item.sourceBytes.slice(0);
+        const rawBytes = item.sourceBytes!.slice(0);
         const previewPolicy = rawPreviewPolicy(!desktop, document.querySelector<HTMLSelectElement>("#raw-demosaic")!.value, item.inspection.megapixels);
         const previewBytes = await askEngine({
           type: "preview",
@@ -1001,11 +1001,15 @@ function outputDetails(item: QueueItem) {
   };
 }
 
+function readSource(item: QueueItem) {
+  return item.sourceBytes ? Promise.resolve(item.sourceBytes.slice(0)) : item.file.arrayBuffer();
+}
+
 async function processItem(item: QueueItem, progress: (value: number, label: string) => void = () => {}) {
   await queueConfiguration(recipeForItem(item));
   progress(10, "Preparing image…");
   const details = outputDetails(item);
-  const bytes = item.sourceBytes!.slice(0);
+  const bytes = await readSource(item);
   progress(20, "Loading pixels…");
   const storageSafeMegapixels = 128 * 1024 * 1024 / 12 / 1_000_000;
   const rawSafeMegapixels = isRaw(item.file) && item.inspection!.megapixels > 24 ? item.inspection!.megapixels / 4 : storageSafeMegapixels;
@@ -1037,7 +1041,7 @@ function setExportProgress(value: number, label: string) {
 
 async function renderAfter(item: QueueItem) {
   const rawPreview = isRaw(item.file) && item.url;
-  const bytes = rawPreview ? await (await fetch(item.url)).arrayBuffer() : item.sourceBytes!.slice(0);
+  const bytes = rawPreview ? await (await fetch(item.url)).arrayBuffer() : await readSource(item);
   const scale = rawPreview ? 1 : Math.min(1, Math.sqrt(2 / item.inspection!.megapixels));
   const output = await askEngine({ type: "process", bytes, format: "jpeg", quality: 90, scale, mode: "fast", preserveMetadata: !rawPreview }, [bytes]);
   const url = URL.createObjectURL(new Blob([output], { type: "image/jpeg" }));

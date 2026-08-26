@@ -231,6 +231,21 @@ test("stops a sequential batch after the active file", async ({ page }) => {
   await expect(page.locator(".queue-save", { hasText: "Save" })).toHaveCount(1);
 });
 
+test("converts a 30-photo queue sequentially", async ({ page }) => {
+  test.setTimeout(5 * 60_000);
+  await ready(page);
+  await page.locator("#file-input").setInputFiles(Array.from({ length: 30 }, (_, index) => ({
+    name: `bulk-${index + 1}.jpg`, mimeType: "image/jpeg", buffer: jpeg,
+  })));
+  await expect(page.locator(".queue-item")).toHaveCount(30);
+  await expect(page.locator("#export-queue")).toBeEnabled({ timeout: 60_000 });
+  await page.locator("#output-format").selectOption("jpeg");
+  await page.getByRole("button", { name: "Fast GPU", exact: true }).click();
+  await page.locator("#export-queue").click();
+  await expect(page.locator(".queue-save", { hasText: "Save" })).toHaveCount(30, { timeout: 5 * 60_000 });
+  await expect(page.locator("#toast")).toContainText("30 files ready to save");
+});
+
 test("adds more files while an existing photo remains open", async ({ page }) => {
   await ready(page);
   await page.locator("#photo-input").setInputFiles({ name: "first.jpg", mimeType: "image/jpeg", buffer: jpeg });
