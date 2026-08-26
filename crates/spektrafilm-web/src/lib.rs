@@ -1182,13 +1182,18 @@ fn apply_negative_film_adjustments(image: &mut ImageBuf, controls: &Adjustments)
     apply_adjustments(image, &controls);
 }
 
-fn apply_composition(image: ImageBuf, composition: &Composition) -> ImageBuf {
+fn apply_composition(mut image: ImageBuf, composition: &Composition) -> ImageBuf {
     let angle = composition.straighten_degrees.clamp(-45.0, 45.0);
     let scale = composition.crop_scale.clamp(10.0, 100.0) / 100.0;
     let border = composition.border.clamp(0.0, 40.0) / 100.0;
     if angle == 0.0 && composition.aspect == "original" && scale == 1.0
         && composition.crop_x == 0.0 && composition.crop_y == 0.0 && border == 0.0
         && composition.vignette_amount == 0.0 { return image; }
+    if angle == 0.0 && composition.aspect == "original" && scale == 1.0
+        && composition.crop_x == 0.0 && composition.crop_y == 0.0 && border == 0.0 {
+        apply_vignette(&mut image, composition);
+        return image;
+    }
     if border > 0.0 {
         let mut content_settings = composition.clone();
         content_settings.aspect = "original".into();
@@ -2241,6 +2246,10 @@ mod tests {
         let portrait = apply_composition(portrait, &Composition { aspect: "4:5".into(), border: 20.0, ..Default::default() });
         assert_eq!((portrait.width, portrait.height), (20, 25));
         assert_eq!(portrait.data.chunks_exact(3).filter(|pixel| pixel[0] == from_f32(0.0)).count(), 12 * 20);
+        let white = ImageBuf::from_data(20, 12, vec![from_f32(0.5); 20 * 12 * 3]);
+        let storage = white.data.as_ptr();
+        let vignette_only = apply_composition(white, &Composition { vignette_amount: -100.0, ..Default::default() });
+        assert_eq!(vignette_only.data.as_ptr(), storage, "vignetting alone must not duplicate a full-resolution image");
         let white = ImageBuf::from_data(20, 12, vec![from_f32(0.5); 20 * 12 * 3]);
         let vignetted = apply_composition(white, &Composition {
             vignette_amount: -100.0,

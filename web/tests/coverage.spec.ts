@@ -120,11 +120,23 @@ test("handles invalid images and approves an oversized mobile photo", async ({ p
   await expect(page.getByRole("button", { name: "Show before" })).toBeVisible({ timeout: 3 * 60_000 });
 });
 
-test("shows Electron exports as full resolution", async ({ page }) => {
+test("exports an edited vignetted Reference JPEG in Electron", async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(navigator, "userAgent", { value: "SpektraElectron", configurable: true }));
   await ready(page);
   await page.locator("#photo-input").setInputFiles({ name: "desktop.jpg", mimeType: "image/jpeg", buffer: jpeg });
   await expect(page.locator("#preview-meta")).toContainText("Desktop app · full resolution", { timeout: 60_000 });
+  await page.locator(".controls > details > summary").click();
+  await page.locator("#contrast").fill("25");
+  await page.locator("#vignette-amount").fill("-50");
+  await page.getByRole("button", { name: "Reference Quality", exact: true }).click();
+  await page.locator("#output-format").selectOption("jpeg");
+  await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+  const pending = page.waitForEvent("download");
+  await page.locator("#export").click();
+  const exported = await pending;
+  expect(exported.suggestedFilename()).toBe("desktop-spektra.jpg");
+  expect([...readFileSync((await exported.path())!).subarray(0, 2)]).toEqual([0xff, 0xd8]);
+  await expect(page.locator("#toast")).toContainText("Reference Quality export complete");
 });
 
 test("keeps the selected preview alive after a WebKit export", async ({ page }) => {

@@ -967,7 +967,7 @@ function setProcessedPreview(item: QueueItem, url: string) {
   const retired = [item.processedUrl, item.retiredProcessedUrl].filter((value): value is string => Boolean(value));
   item.processedUrl = url;
   item.retiredProcessedUrl = undefined;
-  window.setTimeout(() => retired.forEach((value) => URL.revokeObjectURL(value)), 0);
+  window.setTimeout(() => retired.forEach((value) => URL.revokeObjectURL(value)), 1000);
 }
 
 function invalidateProcessedPreviews() {
@@ -1408,6 +1408,7 @@ document.querySelector<HTMLInputElement>("#import-recipe")!.addEventListener("ch
 exportButton.addEventListener("click", async () => {
   const item = queue.find((candidate) => candidate.id === selectedId);
   if (!item) return;
+  window.clearTimeout(previewTimer);
   exportButton.disabled = true;
   cancelExportButton.hidden = false;
   exportProgress.hidden = false;
