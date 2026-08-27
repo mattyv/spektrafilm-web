@@ -50,7 +50,9 @@
             "label": "Browser Engine Adapter",
             "files": [
               "web/src/engine-worker.ts",
-              "crates/spektrafilm-web/src/lib.rs"
+              "crates/spektrafilm-web/src/lib.rs",
+              "web/src/engine-contract.ts",
+              "web/src/runtime.ts"
             ],
             "group": "browser-runtime",
             "change": "added",
@@ -785,7 +787,9 @@
             "id": "preview-scheduler",
             "label": "Latest Preview Wins",
             "files": [
-              "web/src/engine-worker.ts"
+              "web/src/engine-worker.ts",
+              "web/src/main.ts",
+              "web/src/runtime.ts"
             ],
             "group": "engine-runtime",
             "kind": "loop",

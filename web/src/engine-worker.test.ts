@@ -204,7 +204,7 @@ describe("engine worker request chain", () => {
 
     listener!({ data: { id: 1, type: "init" } });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    listener!({ data: { id: 2, type: "preview", bytes: new ArrayBuffer(4), developSensorData: true, rawWhiteBalance: "camera", rawDemosaic: "linear" } });
+    listener!({ data: { id: 2, type: "preview", bytes: new ArrayBuffer(4), maximumDimension: 1200, developSensorData: true, rawWhiteBalance: "camera", rawDemosaic: "linear" } });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(posted[1].ok).toBe(true);

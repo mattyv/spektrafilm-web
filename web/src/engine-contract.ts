@@ -132,7 +132,7 @@ export type PortableLimits = {
 export type EngineRequests = {
   init: Record<never, never>;
   inspect: { bytes: ArrayBuffer; limits?: string };
-  preview: { bytes: ArrayBuffer; developSensorData: boolean; rawWhiteBalance: string; rawDemosaic: string };
+  preview: { bytes: ArrayBuffer; maximumDimension: number; developSensorData: boolean; rawWhiteBalance: string; rawDemosaic: string };
   configure: { film: string; print: string; settings: string; rawWhiteBalance: string; rawDemosaic: string };
   process: {
     bytes: ArrayBuffer;

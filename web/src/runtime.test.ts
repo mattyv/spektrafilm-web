@@ -13,13 +13,13 @@ describe("Reference Quality threads", () => {
 
 describe("RAW preview policy", () => {
   it("uses sensor data and bounds mobile demosaic memory", () => {
-    expect(rawPreviewPolicy(true, "ppg", 12)).toEqual({ developSensorData: false, demosaic: "superpixel" });
-    expect(rawPreviewPolicy(false, "ppg", 12)).toEqual({ developSensorData: true, demosaic: "ppg" });
-    expect(rawPreviewPolicy(false, "superpixel", 12)).toEqual({ developSensorData: true, demosaic: "superpixel" });
+    expect(rawPreviewPolicy(true, "ppg", 12)).toEqual({ developSensorData: false, demosaic: "superpixel", maximumDimension: 1200 });
+    expect(rawPreviewPolicy(false, "ppg", 12)).toEqual({ developSensorData: true, demosaic: "ppg", maximumDimension: 2400 });
+    expect(rawPreviewPolicy(false, "superpixel", 12)).toEqual({ developSensorData: true, demosaic: "superpixel", maximumDimension: 2400 });
   });
 
   it("bounds memory for a full-resolution desktop RAW preview", () => {
-    expect(rawPreviewPolicy(false, "ppg", 36.6)).toEqual({ developSensorData: false, demosaic: "superpixel" });
+    expect(rawPreviewPolicy(false, "ppg", 36.6)).toEqual({ developSensorData: false, demosaic: "superpixel", maximumDimension: 2400 });
   });
 });
 

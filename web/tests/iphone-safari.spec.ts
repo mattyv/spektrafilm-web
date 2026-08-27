@@ -146,6 +146,46 @@ test("applies Auto white balance to a large RAW without a second image decode", 
   await page.locator(".controls > details > summary").click();
   await page.locator("#white-balance-mode").selectOption("auto");
   await expect.poll(() => page.locator("#preview-image").getAttribute("src"), { timeout: 3 * 60_000 }).not.toBe(previous);
+  expect(await page.locator("#preview-image").evaluate((image: HTMLImageElement) => Math.max(image.naturalWidth, image.naturalHeight))).toBeLessThanOrEqual(1200);
+  const whiteBalanced = await page.locator("#preview-image").getAttribute("src");
+  await page.locator("#exposure").evaluate((slider: HTMLInputElement) => {
+    for (const value of ["-1", "-.5", "0", ".5", "1"]) {
+      slider.value = value;
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+      slider.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  });
+  await expect.poll(() => page.locator("#preview-image").getAttribute("src"), { timeout: 3 * 60_000 }).not.toBe(whiteBalanced);
+  await expect(page.locator("#engine-state")).toContainText("Local engine");
+  await expect(page.locator("#toast")).not.toContainText(/unreachable|memory/i);
+});
+
+test("bounds a large photo before repeated iPhone slider previews", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator("#engine-state")).toContainText("Local engine", { timeout: 60_000 });
+  const jpeg = await page.evaluate(async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 6000;
+    canvas.height = 1000;
+    const context = canvas.getContext("2d")!;
+    context.fillStyle = "#b97a56";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob>((resolve) => canvas.toBlob((value) => resolve(value!), "image/jpeg", .8));
+    canvas.width = canvas.height = 1;
+    return [...new Uint8Array(await blob.arrayBuffer())];
+  });
+  await page.locator("#photo-input").setInputFiles({ name: "large.jpg", mimeType: "image/jpeg", buffer: Buffer.from(jpeg) });
+  await expect(page.getByRole("button", { name: "Show before" })).toBeVisible({ timeout: 3 * 60_000 });
+  expect(await page.locator("#preview-image").evaluate((image: HTMLImageElement) => Math.max(image.naturalWidth, image.naturalHeight))).toBeLessThanOrEqual(1200);
+  const previous = await page.locator("#preview-image").getAttribute("src");
+  await page.locator("#contrast").evaluate((slider: HTMLInputElement) => {
+    for (const value of ["-20", "-10", "0", "10", "20"]) {
+      slider.value = value;
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+      slider.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  });
+  await expect.poll(() => page.locator("#preview-image").getAttribute("src"), { timeout: 3 * 60_000 }).not.toBe(previous);
   await expect(page.locator("#engine-state")).toContainText("Local engine");
   await expect(page.locator("#toast")).not.toContainText(/unreachable|memory/i);
 });

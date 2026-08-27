@@ -24,6 +24,7 @@ type QueueItem = {
   panX: number;
   panY: number;
   sourceBytes?: ArrayBuffer;
+  previewPreservesMetadata?: boolean;
 };
 
 const app = document.querySelector<HTMLElement>("#app")!;
@@ -872,25 +873,50 @@ async function addFiles(files: File[]) {
     try {
       const bytes = await item.file.arrayBuffer();
       if (isRaw(item.file)) item.sourceBytes = bytes.slice(0);
-      item.inspection = await askEngine({ type: "inspect", bytes, limits: desktop ? desktopLimits : undefined }, [bytes]);
+      const inspection = await askEngine({ type: "inspect", bytes, limits: desktop ? desktopLimits : undefined }, [bytes]);
       if (isRaw(item.file)) {
         const rawBytes = item.sourceBytes!.slice(0);
-        const previewPolicy = rawPreviewPolicy(!desktop, document.querySelector<HTMLSelectElement>("#raw-demosaic")!.value, item.inspection.megapixels);
+        const previewPolicy = rawPreviewPolicy(!desktop, document.querySelector<HTMLSelectElement>("#raw-demosaic")!.value, inspection.megapixels);
         const previewBytes = await askEngine({
           type: "preview",
           bytes: rawBytes,
+          maximumDimension: previewPolicy.maximumDimension,
           developSensorData: previewPolicy.developSensorData,
           rawWhiteBalance: document.querySelector<HTMLSelectElement>("#raw-white-balance")!.value,
           rawDemosaic: previewPolicy.demosaic,
         }, [rawBytes]);
         item.url = URL.createObjectURL(new Blob([previewBytes], { type: "image/jpeg" }));
+      } else {
+        const preview = await photoPreview(item.file, item.url, inspection.width, inspection.height);
+        item.url = preview.url;
+        item.previewPreservesMetadata = preview.preserveMetadata;
       }
+      item.inspection = inspection;
     } catch (error) {
       item.error = String(error);
     }
     renderQueue();
     if (item.id === selectedId) renderSelected(item);
   }
+}
+
+async function photoPreview(file: File, originalUrl: string, width: number, height: number) {
+  const maximumDimension = desktop ? 2400 : 1200;
+  const longest = Math.max(width, height);
+  if (longest <= maximumDimension) return { url: originalUrl, preserveMetadata: true };
+  const scale = maximumDimension / longest;
+  const resizedWidth = Math.max(1, Math.round(width * scale));
+  const resizedHeight = Math.max(1, Math.round(height * scale));
+  const bitmap = await createImageBitmap(file, { resizeWidth: resizedWidth, resizeHeight: resizedHeight, resizeQuality: "high" });
+  const canvas = document.createElement("canvas");
+  canvas.width = resizedWidth;
+  canvas.height = resizedHeight;
+  canvas.getContext("2d")!.drawImage(bitmap, 0, 0, resizedWidth, resizedHeight);
+  bitmap.close();
+  const preview = await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Photo preview failed")), "image/jpeg", .9));
+  canvas.width = canvas.height = 1;
+  URL.revokeObjectURL(originalUrl);
+  return { url: URL.createObjectURL(preview), preserveMetadata: false };
 }
 
 function select(id: string) {
@@ -1072,10 +1098,8 @@ function setExportProgress(value: number, label: string) {
 }
 
 async function renderAfter(item: QueueItem) {
-  const rawPreview = isRaw(item.file) && item.url;
-  const bytes = rawPreview ? await (await fetch(item.url)).arrayBuffer() : await readSource(item);
-  const scale = rawPreview ? 1 : Math.min(1, Math.sqrt(2 / item.inspection!.megapixels));
-  const output = await askEngine({ type: "process", bytes, format: "jpeg", quality: 90, scale, mode: "fast", preserveMetadata: !rawPreview }, [bytes]);
+  const bytes = await (await fetch(item.url)).arrayBuffer();
+  const output = await askEngine({ type: "process", bytes, format: "jpeg", quality: 90, scale: 1, mode: "fast", preserveMetadata: item.previewPreservesMetadata === true }, [bytes]);
   const url = URL.createObjectURL(new Blob([output], { type: "image/jpeg" }));
   const image = new Image();
   await new Promise<void>((resolve, reject) => {
@@ -1111,7 +1135,7 @@ function invalidateStoredResults(items = queue) {
 
 function scheduleLivePreview() {
   window.clearTimeout(previewTimer);
-  previewTimer = window.setTimeout(() => void refreshLivePreview(), 350);
+  previewTimer = window.setTimeout(() => void refreshLivePreview(), desktop ? 350 : 700);
 }
 
 async function refreshLivePreview() {
@@ -1470,6 +1494,7 @@ for (const id of ["raw-white-balance", "raw-demosaic"]) document.querySelector(`
       const previewBytes = await askEngine({
         type: "preview",
         bytes,
+        maximumDimension: previewPolicy.maximumDimension,
         developSensorData: previewPolicy.developSensorData,
         rawWhiteBalance: document.querySelector<HTMLSelectElement>("#raw-white-balance")!.value,
         rawDemosaic: previewPolicy.demosaic,

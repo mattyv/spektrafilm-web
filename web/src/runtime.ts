@@ -5,7 +5,7 @@ export function referenceThreadCount(hardwareConcurrency: number, mobile: boolea
 
 export function rawPreviewPolicy(mobile: boolean, demosaic: string, megapixels = 0) {
   const bounded = mobile || megapixels > 24;
-  return { developSensorData: !bounded, demosaic: bounded ? "superpixel" : demosaic };
+  return { developSensorData: !bounded, demosaic: bounded ? "superpixel" : demosaic, maximumDimension: mobile ? 1200 : 2400 };
 }
 
 export function isWebKitUserAgent(userAgent: string) {

@@ -123,7 +123,7 @@ async function handle(data: EngineRequest): Promise<EngineResults[keyof EngineRe
     case "inspect":
       return JSON.parse(api.inspect_image(new Uint8Array(data.bytes), data.limits));
     case "preview":
-      return owned(api.raw_preview(new Uint8Array(data.bytes), 2400, data.developSensorData, data.rawWhiteBalance !== "uncorrected", data.rawDemosaic));
+      return owned(api.raw_preview(new Uint8Array(data.bytes), data.maximumDimension, data.developSensorData, data.rawWhiteBalance !== "uncorrected", data.rawDemosaic));
     case "configure":
       return await configure(api, data);
     case "process":
