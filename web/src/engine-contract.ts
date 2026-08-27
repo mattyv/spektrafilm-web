@@ -128,13 +128,21 @@ export type PortableLimits = {
   maxWorkgroupInvocations: number;
 };
 
+export type EngineConfiguration = {
+  film: string;
+  print: string;
+  settings: string;
+  rawWhiteBalance: string;
+  rawDemosaic: string;
+};
+
 /** Payload each worker request carries, keyed by its discriminant. */
 export type EngineRequests = {
   init: Record<never, never>;
   inspect: { bytes: ArrayBuffer; limits?: string };
   preview: { bytes: ArrayBuffer; maximumDimension: number; developSensorData: boolean; rawWhiteBalance: string; rawDemosaic: string };
-  configure: { film: string; print: string; settings: string; rawWhiteBalance: string; rawDemosaic: string };
-  process: {
+  configure: EngineConfiguration;
+  process: EngineConfiguration & {
     bytes: ArrayBuffer;
     format: string;
     quality: number;

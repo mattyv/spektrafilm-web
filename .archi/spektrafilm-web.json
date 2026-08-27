@@ -855,7 +855,8 @@
             "label": "Immutable Export Snapshot",
             "files": [
               "web/src/engine-worker.ts",
-              "web/src/main.ts"
+              "web/src/main.ts",
+              "web/src/engine-contract.ts"
             ],
             "group": "reference-runtime",
             "kind": "resource",

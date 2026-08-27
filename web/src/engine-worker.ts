@@ -2,6 +2,7 @@
 
 import {
   engineRequestType,
+  type EngineConfiguration,
   type EngineHandle,
   type EngineModule,
   type EngineRequest,
@@ -78,7 +79,7 @@ async function initialize(api: EngineModule): Promise<EngineResults["init"]> {
   };
 }
 
-async function configure(api: EngineModule, data: EngineRequest<"configure">): Promise<EngineResults["configure"]> {
+async function configure(api: EngineModule, data: EngineConfiguration): Promise<EngineResults["configure"]> {
   if (!filtersAsset || !lutAsset) throw new Error("Engine assets are not initialized");
   if (processor && data.film === currentFilm && data.print === currentPrint) {
     processor.update_settings(data.settings);
@@ -106,8 +107,9 @@ function owned(value: Uint8Array): Uint8Array<ArrayBuffer> {
   return value as Uint8Array<ArrayBuffer>;
 }
 
-async function process(data: EngineRequest<"process">): Promise<EngineResults["process"]> {
+async function process(api: EngineModule, data: EngineRequest<"process">): Promise<EngineResults["process"]> {
   if (!processor) throw new Error("Engine is not initialized");
+  await configure(api, data);
   return data.mode === "fast"
     ? owned(await processor.process_fast_rotated(new Uint8Array(data.bytes), data.format, data.quality, data.scale, data.preserveMetadata !== false, data.rotation ?? 0))
     : owned(processor.process_reference_rotated(new Uint8Array(data.bytes), data.format, data.quality, data.scale, data.rotation ?? 0));
@@ -127,7 +129,7 @@ async function handle(data: EngineRequest): Promise<EngineResults[keyof EngineRe
     case "configure":
       return await configure(api, data);
     case "process":
-      return await process(data);
+      return await process(api, data);
   }
 }
 

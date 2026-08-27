@@ -592,6 +592,31 @@ test("exports the selected film pipeline and invalidates stale queue results", a
   await expect(page.locator(".queue-save", { hasText: "Save" })).toHaveCount(0);
 });
 
+test("keeps the export film snapshot when the editor changes while reading the photo", async ({ page }) => {
+  await ready(page);
+  await page.locator("#photo-input").setInputFiles({ name: "film-race.jpg", mimeType: "image/jpeg", buffer: jpeg });
+  await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+  await page.locator("#output-format").selectOption("jpeg");
+  await page.evaluate(() => {
+    const read = File.prototype.arrayBuffer;
+    File.prototype.arrayBuffer = async function () {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      return read.call(this);
+    };
+  });
+
+  for (const mode of ["Fast GPU", "Reference Quality"]) {
+    await page.getByRole("button", { name: mode, exact: true }).click();
+    await page.locator("#film-stock").selectOption("kodak_trix");
+    await page.locator("#print-stock").selectOption("kodak_2302");
+    const pending = page.waitForEvent("download");
+    await page.locator("#export").click();
+    await page.locator("#film-stock").selectOption("kodak_portra_400");
+    expect((await decodedDownload(page, await pending)).channelSpread, mode).toBeLessThan(3);
+    await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+  }
+});
+
 test("commits an in-progress adjustment before JPEG export", async ({ page }) => {
   await ready(page);
   await page.locator("#photo-input").setInputFiles({ name: "pending-adjustment.jpg", mimeType: "image/jpeg", buffer: jpeg });

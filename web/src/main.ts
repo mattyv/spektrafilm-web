@@ -579,14 +579,20 @@ function recipeForItem(item: QueueItem): Recipe {
   return cloneRecipe(item.recipe ?? sharedRecipe ?? currentRecipe());
 }
 
-function queueConfiguration(recipe: Recipe) {
-  configuration = configuration.catch(() => undefined).then(() => askEngine({
-    type: "configure",
+function engineConfiguration(recipe: Recipe) {
+  return {
     film: recipe.film,
     print: recipe.print === "none" ? "kodak_portra_endura" : recipe.print,
     settings: serializeSettings(recipe.settings),
     rawWhiteBalance: document.querySelector<HTMLSelectElement>("#raw-white-balance")!.value,
     rawDemosaic: document.querySelector<HTMLSelectElement>("#raw-demosaic")!.value,
+  };
+}
+
+function queueConfiguration(recipe: Recipe) {
+  configuration = configuration.catch(() => undefined).then(() => askEngine({
+    type: "configure",
+    ...engineConfiguration(recipe),
   })).then(() => undefined);
   void configuration.catch((error) => notify(error instanceof Error ? error.message : String(error)));
   return configuration;
@@ -1068,7 +1074,7 @@ function readSource(item: QueueItem) {
 }
 
 async function processItem(item: QueueItem, progress: (value: number, label: string) => void = () => {}, recipe = recipeForItem(item)) {
-  await queueConfiguration(recipe);
+  const engine = engineConfiguration(recipe);
   progress(10, "Preparing image…");
   const details = outputDetails(item);
   const bytes = await readSource(item);
@@ -1079,7 +1085,7 @@ async function processItem(item: QueueItem, progress: (value: number, label: str
   const scale = exportScale(item.inspection!.megapixels, safeMegapixels);
   const quality = Number(document.querySelector<HTMLInputElement>("#jpeg-quality")!.value);
   progress(25, "Processing full pipeline…");
-  const output = await askEngine({ type: "process", bytes, format: details.format, quality, scale, mode: exportMode, rotation: item.rotation }, [bytes]);
+  const output = await askEngine({ type: "process", ...engine, bytes, format: details.format, quality, scale, mode: exportMode, rotation: item.rotation }, [bytes]);
   progress(90, "Encoding output…");
   return { ...details, bytes: output.buffer };
 }
@@ -1101,9 +1107,10 @@ function setExportProgress(value: number, label: string) {
   exportLabel.textContent = label;
 }
 
-async function renderAfter(item: QueueItem) {
+async function renderAfter(item: QueueItem, recipe = recipeForItem(item)) {
+  const engine = engineConfiguration(recipe);
   const bytes = await (await fetch(item.url)).arrayBuffer();
-  const output = await askEngine({ type: "process", bytes, format: "jpeg", quality: 90, scale: 1, mode: "fast", preserveMetadata: item.previewPreservesMetadata === true }, [bytes]);
+  const output = await askEngine({ type: "process", ...engine, bytes, format: "jpeg", quality: 90, scale: 1, mode: "fast", preserveMetadata: item.previewPreservesMetadata === true }, [bytes]);
   const url = URL.createObjectURL(new Blob([output], { type: "image/jpeg" }));
   const image = new Image();
   await new Promise<void>((resolve, reject) => {

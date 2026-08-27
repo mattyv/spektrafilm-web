@@ -6,6 +6,7 @@ type Posted = { id: number; ok: boolean; error?: string; value?: unknown };
 
 const LIMITS = { memoryBudgetBytes: 1, maxStorageBindingBytes: 2, maxWorkgroupInvocations: 3 };
 const DEFAULT_SETTINGS = { camera: { exposure_compensation_ev: 0 } };
+const CONFIG = { film: "kodak_portra_400", print: "kodak_portra_endura", settings: "{}", rawWhiteBalance: "camera", rawDemosaic: "ppg" };
 
 /** A desktop, cross-origin-isolated environment resolves to more than one reference thread. */
 const THREADED = { hardwareConcurrency: 8, userAgent: "Mozilla/5.0 (X11; Linux x86_64)", isolated: true };
@@ -330,7 +331,7 @@ describe("image requests", () => {
 
   it("refuses to process before the engine is initialized", async () => {
     const worker = await loadWorker();
-    const response = await worker.request({ id: 1, type: "process", bytes: new ArrayBuffer(4), format: "jpeg", quality: 90, scale: 1, mode: "fast" });
+    const response = await worker.request({ id: 1, type: "process", ...CONFIG, bytes: new ArrayBuffer(4), format: "jpeg", quality: 90, scale: 1, mode: "fast" });
 
     expect(response.ok).toBe(false);
     expect(response.error).toContain("Engine is not initialized");
@@ -342,10 +343,41 @@ describe("image requests", () => {
     const worker = await loadWorker({ module });
     await worker.request({ id: 1, type: "init" });
 
-    const response = await worker.request({ id: 2, type: "process", bytes: new ArrayBuffer(4), format: "jpeg", quality: 90, scale: 0.5, mode: "fast", rotation: 90, preserveMetadata: false });
+    const response = await worker.request({ id: 2, type: "process", ...CONFIG, bytes: new ArrayBuffer(4), format: "jpeg", quality: 90, scale: 0.5, mode: "fast", rotation: 90, preserveMetadata: false });
 
     expect(response.ok).toBe(true);
     expect(handle.process_fast_rotated).toHaveBeenCalledWith(expect.any(Uint8Array), "jpeg", 90, 0.5, false, 90);
+  });
+
+  it("configures the requested film atomically with an export", async () => {
+    const first = fakeHandle();
+    const replacement = fakeHandle();
+    let built = 0;
+    const { module } = fakeModule(first, {
+      BrowserEngine: vi.fn(() => built++ === 0 ? first : replacement) as unknown as EngineModule["BrowserEngine"],
+    });
+    const worker = await loadWorker({ module });
+    await worker.request({ id: 1, type: "init" });
+
+    const response = await worker.request({
+      id: 2,
+      type: "process",
+      bytes: new ArrayBuffer(4),
+      format: "jpeg",
+      quality: 90,
+      scale: 1,
+      mode: "reference",
+      film: "kodak_trix",
+      print: "kodak_2302",
+      settings: "{\"film_render\":{}}",
+      rawWhiteBalance: "camera",
+      rawDemosaic: "ppg",
+    });
+
+    expect(response.ok).toBe(true);
+    expect(worker.fetched).toContain("/data/profiles/kodak_trix.json");
+    expect(replacement.process_reference_rotated).toHaveBeenCalled();
+    expect(first.process_reference_rotated).not.toHaveBeenCalled();
   });
 
   it("defaults rotation and metadata preservation on a reference export", async () => {
@@ -354,7 +386,7 @@ describe("image requests", () => {
     const worker = await loadWorker({ module });
     await worker.request({ id: 1, type: "init" });
 
-    const response = await worker.request({ id: 2, type: "process", bytes: new ArrayBuffer(4), format: "png", quality: 100, scale: 1, mode: "reference" });
+    const response = await worker.request({ id: 2, type: "process", ...CONFIG, bytes: new ArrayBuffer(4), format: "png", quality: 100, scale: 1, mode: "reference" });
 
     expect(response.ok).toBe(true);
     expect(handle.process_reference_rotated).toHaveBeenCalledWith(expect.any(Uint8Array), "png", 100, 1, 0);
