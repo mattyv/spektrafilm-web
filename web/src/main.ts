@@ -534,6 +534,7 @@ async function restartEngine() {
   engineGeneration += 1;
   const selected = queue.find((item) => item.id === selectedId);
   const activeRecipe = selected ? recipeForItem(selected) : sharedRecipe && cloneRecipe(sharedRecipe);
+  const savedSharedRecipe = sharedRecipe && cloneRecipe(sharedRecipe);
   worker.terminate();
   for (const request of pending.values()) request.reject(new Error("Export cancelled"));
   pending.clear();
@@ -544,9 +545,10 @@ async function restartEngine() {
   if (webkit) await new Promise((resolve) => window.setTimeout(resolve, 1000));
   worker = createWorker();
   await initialize(false, false);
+  if (savedSharedRecipe) sharedRecipe = savedSharedRecipe;
   if (activeRecipe) {
-    sharedRecipe = activeRecipe;
-    await queueConfiguration(activeRecipe);
+    showRecipe(activeRecipe);
+    await configuration;
   }
   gpuReady = true;
   state.classList.add("ready");
@@ -802,7 +804,7 @@ function showRecipe(recipe: Recipe) {
   settings = structuredClone(recipe.settings);
   settings.adjustments ??= { temperature: 0, tint: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0, saturation: 0, vibrance: 0, clarity: 0, dehaze: 0 };
   settings.composition ??= { straighten_degrees: 0, aspect: "original", crop_scale: 100, crop_x: 0, crop_y: 0, border: 0 };
-  Object.assign(settings.composition, { vignette_amount: 0, vignette_midpoint: 50, vignette_roundness: 0, vignette_feather: 50, vignette_highlights: 0 }, settings.composition);
+  settings.composition = { vignette_amount: 0, vignette_midpoint: 50, vignette_roundness: 0, vignette_feather: 50, vignette_highlights: 0, ...settings.composition };
   document.querySelector<HTMLSelectElement>("#film-stock")!.value = recipe.film;
   document.querySelector<HTMLSelectElement>("#print-stock")!.value = recipe.print;
   document.querySelector<HTMLInputElement>("#exposure")!.value = String(settings.camera.exposure_compensation_ev);
@@ -893,6 +895,9 @@ async function addFiles(files: File[]) {
 
 function select(id: string) {
   if (id !== selectedId) {
+    if (selectedId) {
+      configure();
+    }
     history = [];
     undoButton.disabled = true;
   }
@@ -1032,8 +1037,8 @@ function readSource(item: QueueItem) {
   return item.sourceBytes ? Promise.resolve(item.sourceBytes.slice(0)) : item.file.arrayBuffer();
 }
 
-async function processItem(item: QueueItem, progress: (value: number, label: string) => void = () => {}) {
-  await queueConfiguration(recipeForItem(item));
+async function processItem(item: QueueItem, progress: (value: number, label: string) => void = () => {}, recipe = recipeForItem(item)) {
+  await queueConfiguration(recipe);
   progress(10, "Preparing image…");
   const details = outputDetails(item);
   const bytes = await readSource(item);
@@ -1542,6 +1547,7 @@ exportButton.addEventListener("click", async () => {
   const item = queue.find((candidate) => candidate.id === selectedId);
   if (!item) return;
   configure();
+  const recipe = currentRecipe();
   window.clearTimeout(previewTimer);
   exportButton.disabled = true;
   cancelExportButton.hidden = false;
@@ -1552,7 +1558,7 @@ exportButton.addEventListener("click", async () => {
   try {
     await configuration;
     if (generation !== engineGeneration) throw new Error("Export cancelled");
-    const result = await processItem(item, setExportProgress);
+    const result = await processItem(item, setExportProgress, recipe);
     if (generation !== engineGeneration) throw new Error("Export cancelled");
     setExportProgress(95, "Saving file…");
     download(new Blob([result.bytes], { type: result.mime }), result.downloadAs);

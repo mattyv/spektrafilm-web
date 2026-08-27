@@ -71,9 +71,52 @@ async function decodedDownload(page: import("@playwright/test").Page, path: stri
     const image = new Image();
     image.src = url;
     await image.decode();
-    return { width: image.naturalWidth, height: image.naturalHeight };
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext("2d")!;
+    context.drawImage(image, 0, 0);
+    let hash = 2166136261;
+    for (const byte of context.getImageData(0, 0, canvas.width, canvas.height).data) hash = Math.imul(hash ^ byte, 16777619);
+    return { width: image.naturalWidth, height: image.naturalHeight, hash: hash >>> 0 };
   }, source);
 }
+
+test("keeps a vignette when Electron exports a second photo as a Reference JPEG", async ({ browser }) => {
+  test.setTimeout(10 * 60_000);
+  const context = await browser.newContext({ userAgent: "Mozilla/5.0 SpektraElectron" });
+  const page = await context.newPage();
+  await page.goto("/");
+  await expect(page.locator("#engine-state")).toContainText("Local engine", { timeout: 60_000 });
+  await page.locator("#photo-input").setInputFiles({ name: "first.jpg", mimeType: "image/jpeg", buffer: jpeg });
+  await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+  await page.getByRole("button", { name: "Reference Quality", exact: true }).click();
+  await page.locator(".controls > details > summary").click();
+  await page.locator("#output-format").selectOption("jpeg");
+  await Promise.all([page.waitForEvent("download"), page.locator("#export").click()]);
+  await expect(page.locator("#export")).toBeEnabled({ timeout: 3 * 60_000 });
+  await page.locator("#vignette-amount").evaluate((control: HTMLInputElement) => { control.value = "-100"; });
+  await expect(page.locator("#adjustment-scope")).toHaveValue("all");
+
+  await page.locator("#file-input").setInputFiles(dng);
+  await expect(page.locator(".queue-select")).toHaveCount(2);
+  await page.locator(".queue-select").nth(1).click();
+  await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+  await expect(page.locator("#vignette-amount")).toHaveValue("-100");
+
+  const exportHash = async (amount?: string) => {
+    if (amount !== undefined) await page.locator("#vignette-amount").fill(amount);
+    const pending = page.waitForEvent("download");
+    await page.locator("#export").click();
+    const path = await (await pending).path();
+    expect(path).not.toBeNull();
+    await expect(page.locator("#export")).toBeEnabled({ timeout: 3 * 60_000 });
+    return (await decodedDownload(page, path!)).hash;
+  };
+
+  expect(await exportHash()).not.toBe(await exportHash("0"));
+  await context.close();
+});
 
 test("develops a sharp desktop DNG preview with working live controls", async ({ page }) => {
   test.setTimeout(30 * 60_000);

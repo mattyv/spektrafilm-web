@@ -1,7 +1,7 @@
 {
   "name": "spektra-mobile",
   "private": true,
-  "version": "0.2.22",
+  "version": "0.2.23",
   "type": "module",
   "scripts": {
     "build:wasm": "wasm-pack build ../crates/spektrafilm-web --target web --out-dir ../../web/public/wasm --release && npm run typecheck:bindings && npm run build:wasm:threaded && npm run build:assets",
@@ -12,8 +12,8 @@
     "test:all": "npm run typecheck && npm run test:coverage && npm run test:coverage:browser && npm run test:coverage:rust && npm run test:iphone-safari",
     "release:verify": "npm run test:all && npm run build",
     "dev": "npm run build:wasm && npm run typecheck && vite --host 0.0.0.0",
-    "desktop": "npm run build && electron electron/main.cjs",
-    "desktop:run": "electron electron/main.cjs",
+    "desktop": "npm run desktop:run",
+    "desktop:run": "npm run build && electron electron/main.cjs",
     "test": "vitest run src",
     "test:coverage": "vitest run --coverage",
     "test:coverage:browser": "E2E_COVERAGE=1 playwright test --config playwright.coverage.config.ts && node scripts/report-browser-coverage.mjs",

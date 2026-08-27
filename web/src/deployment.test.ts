@@ -8,7 +8,9 @@ describe("deployment assets", () => {
     expect(headers).toMatch(/\/wasm\/\*\s+Cache-Control: no-cache/);
     expect(headers).toMatch(/\/sw\.js\s+Cache-Control: no-cache, no-store, must-revalidate/);
     expect(headers).toMatch(/\/wasm\/\*\.wasm\s+Content-Type: application\/wasm/);
-    const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    const { version } = packageJson;
+    expect(packageJson.scripts["desktop:run"]).toContain("npm run build");
     const serviceWorker = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
     const assetBuilder = readFileSync(new URL("../scripts/copy-assets.mjs", import.meta.url), "utf8");
     expect(serviceWorker).toContain(`spektra-mobile-v${version}`);

@@ -62,7 +62,9 @@
             "id": "asset-cache",
             "label": "Offline Profile + App Cache",
             "files": [
-              "web/scripts/copy-assets.mjs"
+              "web/scripts/copy-assets.mjs",
+              "web/package.json",
+              "web/electron/main.cjs"
             ],
             "group": "browser-runtime",
             "change": "added",
@@ -1134,6 +1136,11 @@
           "id": "in-memory-assets",
           "text": "Load generated browser profile assets through an in-memory provider",
           "rationale": "Browser builds cannot use native paths, and deriving assets from the existing data avoids configuration drift"
+        },
+        {
+          "id": "fresh-electron-assets",
+          "text": "Build the web and WebAssembly assets before every Electron launch",
+          "rationale": "The desktop shell must not run a stale dist tree whose interface and processing engine happen to share an old version number"
         },
         {
           "id": "explicit-device-limit",

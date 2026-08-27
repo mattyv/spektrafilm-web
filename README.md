@@ -70,7 +70,7 @@ Run `npm run release:verify` before a release; it runs the unit, browser, Rust c
 cd web
 npm ci
 npm run desktop       # production build, then launch Electron
-npm run desktop:run   # launch an existing web/dist build
+npm run desktop:run   # same safe build-and-launch path
 ```
 
 The Electron app uses the same generated WebAssembly bindings as the website and exports at full source resolution without the browser/mobile megapixel cap. The repository currently launches an unpackaged Electron app; it does not yet produce an installer.
