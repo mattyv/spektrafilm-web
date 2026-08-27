@@ -448,6 +448,7 @@ let gpuReady = false;
 let settings: Record<string, any> | undefined;
 let configuration = Promise.resolve();
 let batchRunning = false;
+let importsPending = 0;
 let cancelBatch = false;
 let engineGeneration = 0;
 let exportMode: "reference" | "fast" = "fast";
@@ -865,6 +866,7 @@ async function addFiles(files: File[]) {
     return;
   }
   const additions: QueueItem[] = files.map((file) => ({ id: crypto.randomUUID(), file, url: isRaw(file) ? "" : URL.createObjectURL(file), rotation: 0, zoom: 1, panX: 0, panY: 0 }));
+  importsPending += additions.length;
   queue.push(...additions);
   renderQueue();
   if (!selectedId && additions[0]) select(additions[0].id);
@@ -894,6 +896,8 @@ async function addFiles(files: File[]) {
       item.inspection = inspection;
     } catch (error) {
       item.error = String(error);
+    } finally {
+      importsPending -= 1;
     }
     renderQueue();
     if (item.id === selectedId) renderSelected(item);
@@ -1041,7 +1045,7 @@ function renderQueue() {
     card.append(discard);
     return card;
   }));
-  exportQueueButton.disabled = !gpuReady || batchRunning || !queue.some(isProcessable);
+  exportQueueButton.disabled = !gpuReady || batchRunning || importsPending > 0 || !queue.some(isProcessable);
   renderLightroom();
 }
 
