@@ -1107,10 +1107,14 @@ function setExportProgress(value: number, label: string) {
   exportLabel.textContent = label;
 }
 
-async function renderAfter(item: QueueItem, recipe = recipeForItem(item)) {
+async function renderAfter(item: QueueItem, recipe = recipeForItem(item), mode = exportMode) {
   const engine = engineConfiguration(recipe);
   const bytes = await (await fetch(item.url)).arrayBuffer();
-  const output = await askEngine({ type: "process", ...engine, bytes, format: "jpeg", quality: 90, scale: 1, mode: "fast", preserveMetadata: item.previewPreservesMetadata === true }, [bytes]);
+  const longest = Math.max(item.inspection?.width ?? 0, item.inspection?.height ?? 0);
+  const previewInputScale = longest ? Math.min(1, (desktop ? 2400 : 1200) / longest) : 1;
+  const previewMegapixels = (item.inspection?.megapixels ?? 1) * previewInputScale ** 2;
+  const scale = mode === "reference" ? Math.min(1, Math.sqrt(1 / previewMegapixels)) : 1;
+  const output = await askEngine({ type: "process", ...engine, bytes, format: "jpeg", quality: 90, scale, mode, preserveMetadata: item.previewPreservesMetadata === true }, [bytes]);
   const url = URL.createObjectURL(new Blob([output], { type: "image/jpeg" }));
   const image = new Image();
   await new Promise<void>((resolve, reject) => {
@@ -1339,12 +1343,17 @@ document.querySelector("#drop-zone")!.addEventListener("drop", (event) => {
 document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((button) => {
   button.addEventListener("click", () => {
     const nextMode = button.dataset.mode as "reference" | "fast";
-    if (nextMode !== exportMode) invalidateStoredResults();
+    const changed = nextMode !== exportMode;
+    if (changed) {
+      invalidateStoredResults();
+      invalidateProcessedPreviews();
+    }
     exportMode = nextMode;
     document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
     exportButton.textContent = labelText(exportMode === "reference" ? "Export reference quality" : "Export with Fast GPU");
     const selected = queue.find((item) => item.id === selectedId);
     if (selected) renderSelected(selected);
+    if (changed) scheduleLivePreview();
   });
 });
 

@@ -140,9 +140,10 @@ test("develops a sharp desktop DNG preview with working live controls", async ({
   const firstAfter = await displayedImage(page);
   expect(firstAfter.hash).not.toBe(before.hash);
   await page.getByRole("button", { name: "Reference Quality" }).click();
-  expect((await displayedImage(page)).src).toBe(firstAfter.src);
+  await expect.poll(() => page.locator("#preview-image").getAttribute("src"), { timeout: 3 * 60_000 }).not.toBe(firstAfter.src);
+  const referenceAfter = await displayedImage(page);
   await page.getByRole("button", { name: "Fast GPU", exact: true }).click();
-  expect((await displayedImage(page)).src).toBe(firstAfter.src);
+  await expect.poll(() => page.locator("#preview-image").getAttribute("src"), { timeout: 3 * 60_000 }).not.toBe(referenceAfter.src);
   await page.getByRole("button", { name: "Show before" }).click();
   await expect(page.locator("#preview-image")).toHaveAttribute("src", before.src);
   expect((await displayedImage(page)).hash).toBe(before.hash);

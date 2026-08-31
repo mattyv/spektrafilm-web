@@ -15,7 +15,7 @@ test("reports missing WebGPU", async ({ page }) => {
 });
 
 test("reports worker startup failures", async ({ page }) => {
-  await page.route("**/src/engine-worker.ts*", (route) => route.fulfill({ contentType: "text/javascript", body: "throw new Error('worker boom')" }));
+  await page.route("**/*engine-worker*", (route) => route.fulfill({ contentType: "text/javascript", body: "throw new Error('worker boom')" }));
   await page.goto("/");
   await expect(page.locator("#engine-state")).toContainText("Engine failed to start", { timeout: 60_000 });
   await page.locator("#photo-input").setInputFiles({ name: "early.jpg", mimeType: "image/jpeg", buffer: jpeg });

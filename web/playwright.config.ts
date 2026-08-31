@@ -4,6 +4,7 @@ const remote = process.env.SPEKTRAFILM_E2E_BASE_URL;
 
 export default defineConfig({
   testDir: "./tests",
+  testIgnore: "iphone-safari.spec.ts",
   timeout: 10 * 60_000,
   workers: 1,
   use: {

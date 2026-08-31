@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const jpeg = readFileSync(new URL("../public/icon.jpg", import.meta.url));
+const card = readFileSync(new URL("../../docs/card.jpg", import.meta.url));
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
 async function ready(page: import("@playwright/test").Page) {
@@ -69,6 +70,49 @@ async function decodedDownload(page: import("@playwright/test").Page, download: 
     return { width: image.naturalWidth, height: image.naturalHeight, channelSpread: channelSpread / (pixels.length / 4), hash: hash >>> 0 };
   }, url);
 }
+
+async function thumbnail(page: import("@playwright/test").Page, source: string) {
+  return page.evaluate(async (url) => {
+    const image = new Image();
+    image.src = url;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = 64;
+    canvas.height = 96;
+    const context = canvas.getContext("2d")!;
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return [...context.getImageData(0, 0, canvas.width, canvas.height).data];
+  }, source);
+}
+
+function meanPixelError(left: number[], right: number[]) {
+  return left.reduce((sum, value, index) => sum + Math.abs(value - right[index]), 0) / left.length;
+}
+
+test("renders Kodachrome without print in both Reference preview and export", async ({ page }) => {
+  test.setTimeout(5 * 60_000);
+  await ready(page);
+  await page.locator("#file-input").setInputFiles({ name: "preview-parity.jpg", mimeType: "image/jpeg", buffer: card });
+  await expect(page.getByRole("button", { name: "Show before" })).toBeVisible({ timeout: 3 * 60_000 });
+  await page.getByRole("button", { name: "Reference Quality", exact: true }).click();
+  await page.locator("#film-stock").selectOption("kodak_ektachrome_100");
+  await page.locator("#print-stock").selectOption("none");
+  await expect(page.locator("#scan-target")).toHaveValue("film");
+  const previous = await page.locator("#preview-image").getAttribute("src");
+  await expect.poll(() => page.locator("#preview-image").getAttribute("src"), { timeout: 3 * 60_000 }).not.toBe(previous);
+  const ektachrome = await thumbnail(page, await page.locator("#preview-image").getAttribute("src") as string);
+  const previousFilm = await page.locator("#preview-image").getAttribute("src");
+  await page.locator("#film-stock").selectOption("kodak_kodachrome_64");
+  await expect.poll(() => page.locator("#preview-image").getAttribute("src"), { timeout: 3 * 60_000 }).not.toBe(previousFilm);
+  const preview = await thumbnail(page, await page.locator("#preview-image").getAttribute("src") as string);
+  await page.locator("#output-format").selectOption("jpeg");
+  const pending = page.waitForEvent("download");
+  await page.locator("#export").click();
+  const path = await (await pending).path();
+  const rendered = await thumbnail(page, `data:image/jpeg;base64,${readFileSync(path!).toString("base64")}`);
+  expect(meanPixelError(preview, ektachrome)).toBeGreaterThan(1);
+  expect(meanPixelError(preview, rendered)).toBeLessThan(15);
+});
 
 test("exposes every engine section, undo, recipes, and attribution", async ({ page }) => {
   await ready(page);
