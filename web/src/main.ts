@@ -1077,12 +1077,17 @@ async function processItem(item: QueueItem, progress: (value: number, label: str
   const engine = engineConfiguration(recipe);
   progress(10, "Preparing image…");
   const details = outputDetails(item);
-  const bytes = await readSource(item);
+  const previewSource = !desktop && exportMode === "reference" && !isRaw(item.file);
+  const bytes = previewSource ? await (await fetch(item.url)).arrayBuffer() : await readSource(item);
   progress(20, "Loading pixels…");
   const storageSafeMegapixels = 128 * 1024 * 1024 / 12 / 1_000_000;
   const rawSafeMegapixels = isRaw(item.file) && item.inspection!.megapixels > 24 ? item.inspection!.megapixels / 4 : storageSafeMegapixels;
   const safeMegapixels = safeExportMegapixels(!desktop, exportMode, item.inspection!.maximumSafeMegapixels, Math.min(storageSafeMegapixels, rawSafeMegapixels), webkit, electron);
-  const scale = exportScale(item.inspection!.megapixels, safeMegapixels);
+  const longest = Math.max(item.inspection!.width, item.inspection!.height);
+  const inputMegapixels = previewSource
+    ? item.inspection!.megapixels * Math.min(1, 1200 / longest) ** 2
+    : item.inspection!.megapixels;
+  const scale = exportScale(inputMegapixels, safeMegapixels);
   const quality = Number(document.querySelector<HTMLInputElement>("#jpeg-quality")!.value);
   progress(25, "Processing full pipeline…");
   const output = await askEngine({ type: "process", ...engine, bytes, format: details.format, quality, scale, mode: exportMode, rotation: item.rotation }, [bytes]);

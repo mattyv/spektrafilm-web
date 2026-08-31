@@ -5,6 +5,20 @@ import { fileURLToPath } from "node:url";
 const dng = process.env.SPEKTRAFILM_E2E_DNG ?? fileURLToPath(new URL("./fixtures/canon-a410-chdk.dng", import.meta.url));
 const leicaDng = fileURLToPath(new URL("./fixtures/L1002126.DNG", import.meta.url));
 
+async function thumbnail(page: import("@playwright/test").Page, source: string) {
+  return page.evaluate(async (url) => {
+    const image = new Image();
+    image.src = url;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = 64;
+    canvas.height = 36;
+    const context = canvas.getContext("2d")!;
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return [...context.getImageData(0, 0, canvas.width, canvas.height).data];
+  }, source);
+}
+
 async function displayedTone(page: import("@playwright/test").Page, tone: "blacks" | "shadows" | "highlights" | "whites") {
   return page.locator("#preview-image").evaluate(async (image: HTMLImageElement, selectedTone) => {
     await image.decode();
@@ -188,6 +202,19 @@ test("bounds a large photo before repeated iPhone slider previews", async ({ pag
   await expect.poll(() => page.locator("#preview-image").getAttribute("src"), { timeout: 3 * 60_000 }).not.toBe(previous);
   await expect(page.locator("#engine-state")).toContainText("Local engine");
   await expect(page.locator("#toast")).not.toContainText(/unreachable|memory/i);
+  await page.getByRole("button", { name: "Reference Quality", exact: true }).click();
+  await page.locator("#film-stock").selectOption("kodak_kodachrome_64");
+  await page.locator("#print-stock").selectOption("none");
+  const unprocessed = await page.locator("#preview-image").getAttribute("src");
+  await expect.poll(() => page.locator("#preview-image").getAttribute("src"), { timeout: 3 * 60_000 }).not.toBe(unprocessed);
+  const preview = await thumbnail(page, await page.locator("#preview-image").getAttribute("src") as string);
+  await page.locator("#output-format").selectOption("jpeg");
+  const pending = page.waitForEvent("download");
+  await page.locator("#export").click();
+  const exported = readFileSync(await (await pending).path() as string);
+  const rendered = await thumbnail(page, `data:image/jpeg;base64,${exported.toString("base64")}`);
+  expect(encodedDimensions(exported, "jpeg")).toEqual({ width: 1200, height: 200 });
+  expect(preview.reduce((sum, value, index) => sum + Math.abs(value - rendered[index]), 0) / preview.length).toBeLessThan(2);
 });
 
 test("keeps every Leica renderer and output format inside the iPhone memory budget", async ({ page }) => {

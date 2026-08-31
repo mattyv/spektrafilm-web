@@ -1,4 +1,4 @@
-const CACHE = "spektra-mobile-v0.2.27";
+const CACHE = "spektra-mobile-v0.2.28";
 const SHELL = ["/", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
