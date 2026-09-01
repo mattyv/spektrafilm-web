@@ -1182,14 +1182,6 @@ fn apply_negative_film_adjustments(image: &mut ImageBuf, controls: &Adjustments)
     apply_adjustments(image, &controls);
 }
 
-/// A `pipeline` clone set to encode linear output (no output CCTF), for feeding
-/// straight into `process`/`process_gpu_async` without a print-ready sRGB curve.
-fn linear(pipeline: Pipeline) -> Pipeline {
-    let mut params = pipeline.params.clone();
-    params.io.output_cctf_encoding = false;
-    pipeline.with_params(params)
-}
-
 fn apply_composition(mut image: ImageBuf, composition: &Composition) -> ImageBuf {
     let angle = composition.straighten_degrees.clamp(-45.0, 45.0);
     let scale = composition.crop_scale.clamp(10.0, 100.0) / 100.0;
@@ -1663,45 +1655,8 @@ impl BrowserEngine {
     }
 
     fn linear_pipeline(&self) -> Pipeline {
-        linear(self.pipeline.clone())
-    }
-
-    /// Meter auto-exposure once, on the as-shot decoded image, before any
-    /// Lightroom-style `adjustments` touch its pixels. Those adjustments
-    /// re-light the image (raising shadows, dropping highlights, etc.); if AE
-    /// metered *after* that, it would renormalize the re-lighting back out —
-    /// the pipeline's own `expose()` stage scales the whole image to a fixed
-    /// target luminance, undoing most of what the user asked for. Only
-    /// `exposure_compensation_ev`, applied after metering, would then survive
-    /// a render. Metering here instead, folding the measured EV into a fixed
-    /// `exposure_compensation_ev`, and turning auto-exposure off keeps AE a
-    /// one-shot decision made on the unadjusted image, so the pipeline (and,
-    /// for large images, every `prepare_strips` strip) applies the same fixed
-    /// exposure the adjustments were computed against.
-    fn meter_auto_exposure(&self, image: &ImageBuf) -> Pipeline {
         let mut params = self.pipeline.params.clone();
-        if params.camera.auto_exposure {
-            let matrix = spektrafilm_core::stages::filming::input_colorspace_to_xyz(
-                &params.io.input_color_space,
-            );
-            params.camera.exposure_compensation_ev +=
-                spektrafilm_core::stages::filming::measure_autoexposure_ev(
-                    image,
-                    &matrix,
-                    &params.camera.auto_exposure_method,
-                );
-            params.camera.auto_exposure = false;
-            // The enlarger stage's `print_exposure_compensation` treats a nonzero
-            // `camera.exposure_compensation_ev` as a deliberate user push and
-            // renormalizes the print exposure to cancel it back out (see
-            // `pipeline.rs`'s `factor_midgray_comp`) — the same reason the UI
-            // clears this flag itself whenever the exposure slider leaves 0
-            // (`main.ts`'s `configure()`). The EV folded in here is a metering
-            // result, not a user push; leaving the flag on would let the print
-            // stage silently renormalize away the very brightness AE just
-            // computed, defeating this fix.
-            params.enlarger.print_exposure_compensation = false;
-        }
+        params.io.output_cctf_encoding = false;
         self.pipeline.clone().with_params(params)
     }
 
@@ -1774,18 +1729,17 @@ impl BrowserEngine {
     }
 
     fn process_reference_decoded(&self, mut decoded: ImageBuf, max_pixels: u64) -> ImageBuf {
-        let pipeline = self.meter_auto_exposure(&decoded);
-        apply_negative_film_adjustments(&mut decoded, &pipeline.params.adjustments);
+        apply_negative_film_adjustments(&mut decoded, &self.pipeline.params.adjustments);
         if u64::from(decoded.width) * u64::from(decoded.height) > max_pixels {
-            self.process_reference_strips(pipeline, decoded)
+            self.process_reference_strips(decoded)
         } else {
-            linear(pipeline).process(decoded, &CpuBackend)
+            self.linear_pipeline().process(decoded, &CpuBackend)
         }
     }
 
-    fn prepare_strips(&self, pipeline: Pipeline, image: ImageBuf) -> (Pipeline, ImageBuf, u32) {
-        let image = resize_image_buf(image, pipeline.params.io.upscale_factor);
-        let mut params = pipeline.params.clone();
+    fn prepare_strips(&self, image: ImageBuf) -> (Pipeline, ImageBuf, u32) {
+        let image = resize_image_buf(image, self.pipeline.params.io.upscale_factor);
+        let mut params = self.pipeline.params.clone();
         params.io.upscale_factor = 1.0;
         params.io.output_cctf_encoding = false;
         if params.camera.auto_exposure {
@@ -1799,10 +1753,6 @@ impl BrowserEngine {
                     &params.camera.auto_exposure_method,
                 );
             params.camera.auto_exposure = false;
-            // See the matching comment in `meter_auto_exposure`: a metered EV
-            // folded into `exposure_compensation_ev` must not be renormalized
-            // back out by the print stage's own exposure compensation.
-            params.enlarger.print_exposure_compensation = false;
         }
         let pixel_um = params.camera.film_format_mm * 1000.0 / image.width.max(image.height) as f32;
         let mut sigma = params
@@ -1838,12 +1788,12 @@ impl BrowserEngine {
             sigma = sigma.max(128.0);
         }
         let halo = (sigma * 3.0).ceil().max(16.0) as u32;
-        (pipeline.with_params(params), image, halo)
+        (self.pipeline.clone().with_params(params), image, halo)
     }
 
-    fn process_reference_strips(&self, pipeline: Pipeline, image: ImageBuf) -> ImageBuf {
+    fn process_reference_strips(&self, image: ImageBuf) -> ImageBuf {
         const MAX_PIXELS: u64 = 4_000_000;
-        let (mut pipeline, image, halo) = self.prepare_strips(pipeline, image);
+        let (mut pipeline, image, halo) = self.prepare_strips(image);
         let (horizontal, strips) = strips(image.width, image.height, MAX_PIXELS, halo);
         let mut output = vec![from_f32(0.0); image.data.len()];
         let base_seeds = [
@@ -1870,12 +1820,11 @@ impl BrowserEngine {
     #[cfg(not(coverage))]
     async fn process_fast_strips(
         &self,
-        pipeline: Pipeline,
         image: ImageBuf,
         gpu: &spektrafilm_gpu::wgpu_backend::WgpuBackend,
     ) -> Result<ImageBuf, JsValue> {
         const MAX_PIXELS: u64 = 120 * 1024 * 1024 / 12;
-        let (mut pipeline, image, halo) = self.prepare_strips(pipeline, image);
+        let (mut pipeline, image, halo) = self.prepare_strips(image);
         let (horizontal, strips) = strips(image.width, image.height, MAX_PIXELS, halo);
         let mut output = vec![from_f32(0.0); image.data.len()];
         let base_seeds = [
@@ -1974,13 +1923,12 @@ impl BrowserEngine {
         rotate_metadata(&mut ancillary, quarter_turns);
         let mut decoded = decode_standard_image(input, scale, self.raw_development)
             .map_err(|error| JsValue::from_str(&error.to_string()))?;
-        let pipeline = self.meter_auto_exposure(&decoded);
-        apply_negative_film_adjustments(&mut decoded, &pipeline.params.adjustments);
+        apply_negative_film_adjustments(&mut decoded, &self.pipeline.params.adjustments);
         let processed =
             if u64::from(decoded.width) * u64::from(decoded.height) > 120 * 1024 * 1024 / 12 {
-                self.process_fast_strips(pipeline, decoded, gpu).await?
+                self.process_fast_strips(decoded, gpu).await?
             } else {
-                linear(pipeline)
+                self.linear_pipeline()
                     .process_gpu_async(decoded, gpu)
                     .await
                     .ok_or_else(|| {
@@ -2359,14 +2307,11 @@ mod tests {
         )
         .unwrap();
         let source = ImageBuf::from_data(2, 2, vec![from_f32(0.25); 12]);
-        let (_, resized, halo) = engine.prepare_strips(engine.pipeline.clone(), source.clone());
+        let (_, resized, halo) = engine.prepare_strips(source.clone());
         assert_eq!((resized.width, resized.height), (2, 2));
         assert!(halo >= 16);
         assert_eq!(
-            engine
-                .process_reference_strips(engine.pipeline.clone(), source.clone())
-                .data
-                .len(),
+            engine.process_reference_strips(source.clone()).data.len(),
             12
         );
         assert_eq!(
@@ -2377,7 +2322,7 @@ mod tests {
             12
         );
         engine.pipeline.params.camera.diffusion_filter.active = true;
-        assert!(engine.prepare_strips(engine.pipeline.clone(), source).2 >= 384);
+        assert!(engine.prepare_strips(source).2 >= 384);
     }
 
     #[test]
@@ -2605,49 +2550,6 @@ mod tests {
     }
 
     #[test]
-    fn adjustments_survive_auto_exposure() {
-        // `camera.auto_exposure` defaults to true. Regression test for the bug where AE
-        // metered the already-adjusted image and rescaled it back toward a fixed luminance
-        // target, damping the brightness component of shadows/highlights/whites/blacks/
-        // contrast/dehaze on every render — only `exposure_compensation_ev`, applied after
-        // metering, ever survived intact.
-        //
-        // On this stock DNG, raising `shadows` to 100 moves overall luminance by roughly
-        // -28% when the render's exposure is unaffected by the adjustment (verified with
-        // `auto_exposure` forced off: the same edit, metered on the unadjusted image only,
-        // lands in the same place). Metering AE on the already-adjusted image (the bug)
-        // damps that to roughly -11% — less than half the adjustment's true effect.
-        let mut engine = BrowserEngine::new(
-            include_bytes!("../../../data/profiles/kodak_portra_400.json"),
-            include_bytes!("../../../data/profiles/kodak_portra_endura.json"),
-            include_bytes!("../../../data/filters/neutral_print_filters.json"),
-            include_bytes!("../../../data/luts/spectral_upsampling/irradiance_xy_tc.npy"),
-            None,
-        )
-        .unwrap();
-        assert!(engine.pipeline.params.camera.auto_exposure, "auto-exposure must default to on");
-        let default = golden_signature(&engine);
-
-        let mut params = engine.pipeline.params.clone();
-        params.adjustments.shadows = 100.0;
-        engine
-            .update_settings(&serde_json::to_string(&params).unwrap())
-            .unwrap();
-        let lifted = golden_signature(&engine);
-
-        let default_luminance: f64 = default.3.iter().sum::<u64>() as f64;
-        let lifted_luminance: f64 = lifted.3.iter().sum::<u64>() as f64;
-        let relative_change = (lifted_luminance - default_luminance) / default_luminance;
-        assert!(
-            relative_change.abs() > 0.18,
-            "raising shadows under auto-exposure only moved overall luminance by {:.1}% — \
-             auto-exposure is renormalizing the adjustment's effect away (an auto-exposure- \
-             independent render moves by roughly -28%)",
-            relative_change * 100.0
-        );
-    }
-
-    #[test]
     fn stock_dng_golden_reference_presets() {
         let mut engine = BrowserEngine::new(
             include_bytes!("../../../data/profiles/kodak_portra_400.json"),
@@ -2737,9 +2639,9 @@ mod tests {
             (
                 164,
                 123,
-                3547580592608572955,
-                [1497267, 1083315, 649022],
-                973523
+                11226509621849799021,
+                [1497258, 1083306, 649006],
+                973524
             )
         );
         assert_eq!(
@@ -2747,9 +2649,9 @@ mod tests {
             (
                 164,
                 123,
-                473275546065636744,
-                [1102725, 759323, 1389281],
-                1105940
+                8478377253799481580,
+                [1102702, 759363, 1389314],
+                1105896
             )
         );
         assert_eq!(
