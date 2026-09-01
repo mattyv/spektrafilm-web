@@ -1617,15 +1617,33 @@ impl BrowserEngine {
         self.update_settings_inner(settings_json).map_err(|error| JsValue::from_str(&error))
     }
 
-    fn update_settings_inner(&mut self, settings_json: &str) -> Result<(), String> {
-        let params = validated_params(settings_json)?;
+    /// Whether `params` changes anything the calibrated pipeline was built from, and so
+    /// needs a full rebuild rather than a cheap params swap.
+    fn requires_rebuild(&self, params: &RuntimeParams) -> bool {
+        // Canonicalise the incoming tree the way a rebuild would before comparing. The
+        // browser seeds its settings from `default_settings_json`, i.e. the plain serde
+        // defaults, while the calibrated pipeline holds engine-derived values for the same
+        // fields — film-specific DIR coupler gammas and the database neutral print filters.
+        // Comparing the two raw made them differ on every call, so every keystroke rebuilt
+        // the pipeline and re-baked the spectral TC LUT from the 6 MB .npy. `with_params`
+        // applies exactly the same derivations the cheap path would.
+        let candidate = self.pipeline.clone().with_params(params.clone());
         let mut previous = serde_json::to_value(&self.pipeline.params).unwrap();
-        let mut next = serde_json::to_value(&params).unwrap();
-        for key in ["io", "adjustments", "composition"] {
+        let mut next = serde_json::to_value(&candidate.params).unwrap();
+        // `adjustments` and `composition` are applied to pixels outside the calibrated
+        // pipeline, so they never need a rebuild. `io` does: io.input_gamut_compress is
+        // baked into the spectral TC LUT at build time, and ignoring it here would keep the
+        // stale LUT and silently drop the change.
+        for key in ["adjustments", "composition"] {
             previous.as_object_mut().unwrap().remove(key);
             next.as_object_mut().unwrap().remove(key);
         }
-        self.pipeline = if previous == next {
+        previous != next
+    }
+
+    fn update_settings_inner(&mut self, settings_json: &str) -> Result<(), String> {
+        let params = validated_params(settings_json)?;
+        self.pipeline = if !self.requires_rebuild(&params) {
             self.pipeline.clone().with_params(params)
         } else {
             // Call and `?` on one line: a lone `)?` carries only the error edge, which no test
@@ -2453,6 +2471,50 @@ mod tests {
     /// stripped before the comparison, so this takes the cheap `with_params` path and never
     /// reaches `build_pipeline`. Reverting `update_settings_inner` to a bare
     /// `serde_json::from_str` therefore fails here and nowhere else.
+    #[test]
+    fn browser_adjustment_change_takes_the_cheap_path() {
+        // The browser sends the whole settings tree from `default_settings_json`, which
+        // carries the serde defaults for engine-derived fields (film-specific DIR coupler
+        // gammas, the database neutral print filters). Those never equal the calibrated
+        // pipeline's own params, so an adjustments-only edit — every slider drag — forced a
+        // full recalibration, rebuilding the spectral TC LUT from the 6 MB .npy each time.
+        let engine = BrowserEngine::new(
+            include_bytes!("../../../data/profiles/kodak_portra_400.json"),
+            include_bytes!("../../../data/profiles/kodak_portra_endura.json"),
+            include_bytes!("../../../data/filters/neutral_print_filters.json"),
+            include_bytes!("../../../data/luts/spectral_upsampling/irradiance_xy_tc.npy"),
+            None,
+        )
+        .unwrap();
+        let mut params = browser_default_params();
+        params.adjustments.contrast = 0.25;
+        assert!(
+            !engine.requires_rebuild(&params),
+            "an adjustments-only change from the browser's own settings tree forced a full rebuild"
+        );
+    }
+
+    #[test]
+    fn input_gamut_compress_change_requires_rebuild() {
+        // io.input_gamut_compress is baked into the spectral TC LUT at build time, so it
+        // cannot ride the cheap params-swap path: doing so keeps the previously baked LUT
+        // and silently ignores the change.
+        let engine = BrowserEngine::new(
+            include_bytes!("../../../data/profiles/kodak_portra_400.json"),
+            include_bytes!("../../../data/profiles/kodak_portra_endura.json"),
+            include_bytes!("../../../data/filters/neutral_print_filters.json"),
+            include_bytes!("../../../data/luts/spectral_upsampling/irradiance_xy_tc.npy"),
+            None,
+        )
+        .unwrap();
+        let mut params = engine.pipeline.params.clone();
+        params.io.input_gamut_compress.algorithm = "off".into();
+        assert!(
+            engine.requires_rebuild(&params),
+            "an input gamut compression change took the cheap path, keeping the stale baked LUT"
+        );
+    }
+
     #[test]
     fn update_settings_rejects_unknown_keys_on_the_cheap_rebuild_path() {
         let mut engine = BrowserEngine::new(

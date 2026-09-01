@@ -116,6 +116,12 @@ pub struct Pipeline {
     preflash_raw: [f64; 3],
     /// Output gamut compressor (built once; identity unless oklch is enabled).
     output_gamut: crate::gamut_compression::OutputGamutCompress,
+    /// Neutral print filters resolved from the database at build time, when the
+    /// (print, illuminant, film) combo was found. `with_params` reapplies these so
+    /// a params swap cannot silently drop them back to the serde defaults — the
+    /// printing stage reads `enlarger.{c,m,y}_filter_neutral` at render time, so
+    /// losing them shifts the colour balance of every subsequent render.
+    neutral_from_db: Option<[f32; 3]>,
 }
 
 /// Asset seam for environments without a native filesystem.
@@ -164,6 +170,13 @@ impl Pipeline {
     pub fn with_params(mut self, params: RuntimeParams) -> Self {
         let mut params = params;
         apply_film_specific_params(&self.film, &mut params);
+        if params.settings.neutral_print_filters_from_database {
+            if let Some([c, m, y]) = self.neutral_from_db {
+                params.enlarger.c_filter_neutral = c;
+                params.enlarger.m_filter_neutral = m;
+                params.enlarger.y_filter_neutral = y;
+            }
+        }
         self.output_gamut = crate::gamut_compression::OutputGamutCompress::build(
             &params.io.output_gamut_compress,
             &params.io.output_color_space,
@@ -203,6 +216,7 @@ impl Pipeline {
             print_illuminant,
             preflash_raw: [0.0; 3],
             output_gamut,
+            neutral_from_db: None,
         }
     }
 
@@ -488,6 +502,7 @@ impl Pipeline {
             print_illuminant,
             preflash_raw,
             output_gamut,
+            neutral_from_db: neutral_cmy_f64.map(|[c, m, y]| [c as f32, m as f32, y as f32]),
         })
     }
 
