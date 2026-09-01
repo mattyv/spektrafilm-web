@@ -233,10 +233,54 @@ test("exposes remaining engine settings as controls instead of JSON", async ({ p
     "film_render.glare.seed",
     "print_render.glare.seed",
     "settings.lut_resolution",
-    "settings.preview_max_size",
   ];
   for (const path of integerSettings) {
     await expect(page.locator(`[data-setting="${path}"][type="number"]`)).toHaveAttribute("step", "1");
+  }
+  // Settings the engine derives, overwrites or never reads must not be offered as controls.
+  // Editing one does nothing, or is silently reverted on the next render, which is
+  // indistinguishable from the app dropping the setting the user just applied.
+  const hiddenScalars = [
+    "film_render.grain.sublayers_active",
+    "film_render.grain.monochrome",
+    "film_render.grain.blur_dye_clouds_um",
+    "enlarger.c_filter_neutral",
+    "enlarger.m_filter_neutral",
+    "enlarger.y_filter_neutral",
+    "enlarger.normalize_print_exposure",
+    "io.input_color_space",
+    "io.input_cctf_decoding",
+    "io.crop",
+    "settings.preview_max_size",
+    "settings.preview_mode",
+    "settings.use_fast_stats",
+    "settings.spectral_gaussian_blur",
+    "settings.apply_hanatos2025_adaptation_surface",
+    "print_render.density_curves_morph.active",
+    "print_render.density_curves_morph.gamma_factor",
+  ];
+  for (const path of hiddenScalars) {
+    await expect(page.locator(`[data-setting="${path}"]`)).toHaveCount(0);
+  }
+  const hiddenArrays = [
+    "camera.filter_uv",
+    "camera.filter_ir",
+    "film_render.grain.micro_structure",
+    "film_render.grain.agx_particle_scale_layers",
+    "film_render.dir_couplers.gamma_samelayer_rgb",
+    "film_render.dir_couplers.gamma_interlayer_r_to_gb",
+    "film_render.dir_couplers.gamma_interlayer_g_to_rb",
+    "film_render.dir_couplers.gamma_interlayer_b_to_rg",
+    "io.crop_center",
+    "io.crop_size",
+  ];
+  for (const path of hiddenArrays) {
+    await expect(page.locator(`[data-setting^="${path}"]`)).toHaveCount(0);
+  }
+  // Their editable siblings must survive: hiding is targeted at engine-controlled leaves,
+  // not at whole sections of the panel.
+  for (const path of ["film_render.dir_couplers.amount", "print_render.density_curves_morph.gamma_factor_fast"]) {
+    await expect(page.locator(`[data-setting="${path}"][type="number"]`)).toHaveCount(1);
   }
   const grainSeed = page.locator('[data-setting="film_render.grain.seed"][type="number"]');
   await grainSeed.fill("12.5");
