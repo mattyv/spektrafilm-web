@@ -709,3 +709,38 @@ test("exports the same photo twice without reopening it", async ({ page }) => {
     await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
   }
 });
+
+test("refuses a saved recipe with an unknown settings key without stranding the engine", async ({ page }) => {
+  await ready(page);
+  await page.locator("#file-input").setInputFiles({ name: "poisoned-recipe.jpg", mimeType: "image/jpeg", buffer: jpeg });
+  await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+  await expect(page.getByRole("button", { name: "Show before" })).toBeVisible({ timeout: 3 * 60_000 });
+  await page.locator(".controls > details > summary").click();
+
+  await page.locator("#recipe-name").fill("Poisoned recipe");
+  await page.locator("#save-recipe").click();
+  await expect(page.locator("#saved-recipes option")).toContainText(["Saved recipes…", "Poisoned recipe"]);
+
+  // Simulate a recipe saved by an older build (or hand-edited storage) that carries a
+  // settings key the current contract no longer knows.
+  await page.evaluate(() => {
+    const recipes = JSON.parse(localStorage.getItem("spektra-recipes") as string);
+    recipes[0].settings.mystery_setting = true;
+    localStorage.setItem("spektra-recipes", JSON.stringify(recipes));
+  });
+
+  await page.evaluate(() => { document.querySelector("#toast")!.textContent = ""; });
+  await page.locator("#saved-recipes").selectOption("0");
+
+  // The bad recipe must be refused with a toast instead of silently poisoning live state.
+  await expect(page.locator("#toast")).toContainText("mystery_setting");
+
+  // Live state must be unharmed: an ordinary edit right after the refused recipe still
+  // has to reach the engine and change the rendered preview, instead of being stranded
+  // behind a settings tree the engine can no longer configure.
+  const before = await displayedImage(page);
+  await page.locator("#warmth").fill("20");
+  await expect.poll(() => page.locator("#preview-image").getAttribute("src"), { timeout: 3 * 60_000 }).not.toBe(before.src);
+  const after = await displayedImage(page);
+  expect(after.hash).not.toBe(before.hash);
+});

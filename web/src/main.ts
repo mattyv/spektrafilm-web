@@ -802,12 +802,17 @@ function beginViewGesture(item: QueueItem) {
   viewGesture = { ...metrics, zoom: item.zoom, panX: item.panX, panY: item.panY };
 }
 
-function showRecipe(recipe: Recipe) {
+// Validate before a recipe reaches any live state. A key the contract does not know would
+// otherwise be installed and then rejected later by every configure(), leaving the engine
+// stranded on the last settings it accepted while the UI showed the new recipe. Callers must
+// run this before assigning sharedRecipe or pushing undo, not merely before showRecipe().
+function validateRecipe(recipe: Recipe) {
   if (!isRuntimeSettings(recipe.settings)) throw new Error("Not a Spektra Mobile recipe");
-  // Validate before the recipe reaches the live settings tree. A key the contract does not
-  // know would otherwise be installed here and rejected later by every configure(), leaving
-  // the engine stranded on the last settings it accepted while the UI showed the new recipe.
   serializeSettings(recipe.settings);
+}
+
+function showRecipe(recipe: Recipe) {
+  validateRecipe(recipe);
   restoring = true;
   settings = structuredClone(recipe.settings);
   settings.adjustments ??= { temperature: 0, tint: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0, saturation: 0, vibrance: 0, clarity: 0, dehaze: 0 };
@@ -1566,6 +1571,12 @@ savedRecipes.addEventListener("change", () => {
   if (!savedRecipes.value) return;
   const recipe = savedRecipeList()[Number(savedRecipes.value)];
   if (!recipe) return;
+  try {
+    validateRecipe(recipe);
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error));
+    return;
+  }
   pushUndo();
   sharedRecipe = cloneRecipe(recipe);
   invalidateStoredResults();
@@ -1584,6 +1595,7 @@ document.querySelector<HTMLInputElement>("#import-recipe")!.addEventListener("ch
   if (!file) return;
   try {
     const recipe = parseRecipe(await file.text());
+    validateRecipe(recipe);
     pushUndo();
     sharedRecipe = cloneRecipe(recipe);
     invalidateStoredResults();
