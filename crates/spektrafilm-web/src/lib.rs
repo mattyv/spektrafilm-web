@@ -2417,6 +2417,48 @@ mod tests {
     /// reaches `build_pipeline`. Reverting `update_settings_inner` to a bare
     /// `serde_json::from_str` therefore fails here and nowhere else.
     #[test]
+    fn cheap_path_keeps_database_neutral_print_filters() {
+        // Drives update_settings_inner down the cheap params-swap path and pins the
+        // invariant that makes that path safe. The browser sends the serde defaults for
+        // the neutral print filters, but the calibrated pipeline holds the values the
+        // filter database resolved for this (print, illuminant, film) combo, and the
+        // printing stage reads them at render time — so a swap that let the defaults
+        // through would shift the colour balance of every later render.
+        let mut engine = BrowserEngine::new(
+            include_bytes!("../../../data/profiles/kodak_portra_400.json"),
+            include_bytes!("../../../data/profiles/kodak_portra_endura.json"),
+            include_bytes!("../../../data/filters/neutral_print_filters.json"),
+            include_bytes!("../../../data/luts/spectral_upsampling/irradiance_xy_tc.npy"),
+            None,
+        )
+        .unwrap();
+        let calibrated = [
+            engine.pipeline.params.enlarger.c_filter_neutral,
+            engine.pipeline.params.enlarger.m_filter_neutral,
+            engine.pipeline.params.enlarger.y_filter_neutral,
+        ];
+        let mut params = browser_default_params();
+        params.adjustments.contrast = 0.25;
+        assert_ne!(
+            params.enlarger.m_filter_neutral, calibrated[1],
+            "test premise: the browser defaults must differ from the database values"
+        );
+        engine
+            .update_settings_inner(&serde_json::to_string(&params).unwrap())
+            .unwrap();
+        assert_eq!(
+            [
+                engine.pipeline.params.enlarger.c_filter_neutral,
+                engine.pipeline.params.enlarger.m_filter_neutral,
+                engine.pipeline.params.enlarger.y_filter_neutral,
+            ],
+            calibrated,
+            "the cheap params swap dropped the database neutral print filters"
+        );
+        assert_eq!(engine.pipeline.params.adjustments.contrast, 0.25);
+    }
+
+    #[test]
     fn browser_adjustment_change_takes_the_cheap_path() {
         // The browser sends the whole settings tree from `default_settings_json`, which
         // carries the serde defaults for engine-derived fields (film-specific DIR coupler
