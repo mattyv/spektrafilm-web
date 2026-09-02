@@ -604,6 +604,29 @@ function pushUndo() {
   undoButton.disabled = false;
 }
 
+// Settings the engine derives, overwrites or never reads. Offering them as controls is
+// worse than omitting them: editing one either does nothing at all, or is silently
+// overwritten on the next render, which the user experiences as the app ignoring the
+// settings they just applied.
+//   - engine-derived: apply_film_specific_params rewrites the DIR coupler gammas and
+//     grain.monochrome from the film profile; the neutral print filters come from the
+//     filter database; browser_params pins the input colour space; configure() derives
+//     normalize_print_exposure and the density-curve morph from the main sliders.
+//   - never read: no render path reads these at all.
+const engineControlledSettings = new Set([
+  "camera.filter_uv", "camera.filter_ir",
+  "film_render.dir_couplers.gamma_samelayer_rgb", "film_render.dir_couplers.gamma_interlayer_r_to_gb",
+  "film_render.dir_couplers.gamma_interlayer_g_to_rb", "film_render.dir_couplers.gamma_interlayer_b_to_rg",
+  "film_render.grain.monochrome", "film_render.grain.micro_structure", "film_render.grain.blur_dye_clouds_um",
+  "film_render.grain.agx_particle_scale_layers", "film_render.grain.sublayers_active",
+  "enlarger.c_filter_neutral", "enlarger.m_filter_neutral", "enlarger.y_filter_neutral",
+  "enlarger.normalize_print_exposure",
+  "print_render.density_curves_morph.active", "print_render.density_curves_morph.gamma_factor",
+  "io.input_color_space", "io.input_cctf_decoding", "io.crop", "io.crop_center", "io.crop_size",
+  "settings.spectral_gaussian_blur", "settings.preview_mode", "settings.use_fast_stats",
+  "settings.preview_max_size", "settings.apply_hanatos2025_adaptation_surface",
+]);
+
 const coveredSettings = new Set([
   "camera.exposure_compensation_ev", "camera.auto_exposure", "enlarger.y_filter_shift", "enlarger.m_filter_shift",
   "enlarger.print_exposure", "enlarger.print_exposure_compensation", "film_render.grain.active", "film_render.grain.agx_particle_scale",
@@ -635,7 +658,7 @@ function renderSuperAdvanced() {
   superAdvanced.replaceChildren();
   const leaves: [string, string | number | boolean][] = [];
   const visit = (value: any, path = "") => {
-    if (coveredSettings.has(path)) return;
+    if (coveredSettings.has(path) || engineControlledSettings.has(path)) return;
     if (value && typeof value === "object") Object.entries(value).forEach(([key, child]) => visit(child, path ? `${path}.${key}` : key));
     else if (["string", "number", "boolean"].includes(typeof value)) leaves.push([path, value]);
   };
@@ -802,12 +825,17 @@ function beginViewGesture(item: QueueItem) {
   viewGesture = { ...metrics, zoom: item.zoom, panX: item.panX, panY: item.panY };
 }
 
-function showRecipe(recipe: Recipe) {
+// Validate before a recipe reaches any live state. A key the contract does not know would
+// otherwise be installed and then rejected later by every configure(), leaving the engine
+// stranded on the last settings it accepted while the UI showed the new recipe. Callers must
+// run this before assigning sharedRecipe or pushing undo, not merely before showRecipe().
+function validateRecipe(recipe: Recipe) {
   if (!isRuntimeSettings(recipe.settings)) throw new Error("Not a Spektra Mobile recipe");
-  // Validate before the recipe reaches the live settings tree. A key the contract does not
-  // know would otherwise be installed here and rejected later by every configure(), leaving
-  // the engine stranded on the last settings it accepted while the UI showed the new recipe.
   serializeSettings(recipe.settings);
+}
+
+function showRecipe(recipe: Recipe) {
+  validateRecipe(recipe);
   restoring = true;
   settings = structuredClone(recipe.settings);
   settings.adjustments ??= { temperature: 0, tint: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0, saturation: 0, vibrance: 0, clarity: 0, dehaze: 0 };
@@ -1566,6 +1594,12 @@ savedRecipes.addEventListener("change", () => {
   if (!savedRecipes.value) return;
   const recipe = savedRecipeList()[Number(savedRecipes.value)];
   if (!recipe) return;
+  try {
+    validateRecipe(recipe);
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error));
+    return;
+  }
   pushUndo();
   sharedRecipe = cloneRecipe(recipe);
   invalidateStoredResults();
@@ -1584,6 +1618,7 @@ document.querySelector<HTMLInputElement>("#import-recipe")!.addEventListener("ch
   if (!file) return;
   try {
     const recipe = parseRecipe(await file.text());
+    validateRecipe(recipe);
     pushUndo();
     sharedRecipe = cloneRecipe(recipe);
     invalidateStoredResults();

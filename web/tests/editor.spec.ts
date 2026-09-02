@@ -233,10 +233,54 @@ test("exposes remaining engine settings as controls instead of JSON", async ({ p
     "film_render.glare.seed",
     "print_render.glare.seed",
     "settings.lut_resolution",
-    "settings.preview_max_size",
   ];
   for (const path of integerSettings) {
     await expect(page.locator(`[data-setting="${path}"][type="number"]`)).toHaveAttribute("step", "1");
+  }
+  // Settings the engine derives, overwrites or never reads must not be offered as controls.
+  // Editing one does nothing, or is silently reverted on the next render, which is
+  // indistinguishable from the app dropping the setting the user just applied.
+  const hiddenScalars = [
+    "film_render.grain.sublayers_active",
+    "film_render.grain.monochrome",
+    "film_render.grain.blur_dye_clouds_um",
+    "enlarger.c_filter_neutral",
+    "enlarger.m_filter_neutral",
+    "enlarger.y_filter_neutral",
+    "enlarger.normalize_print_exposure",
+    "io.input_color_space",
+    "io.input_cctf_decoding",
+    "io.crop",
+    "settings.preview_max_size",
+    "settings.preview_mode",
+    "settings.use_fast_stats",
+    "settings.spectral_gaussian_blur",
+    "settings.apply_hanatos2025_adaptation_surface",
+    "print_render.density_curves_morph.active",
+    "print_render.density_curves_morph.gamma_factor",
+  ];
+  for (const path of hiddenScalars) {
+    await expect(page.locator(`[data-setting="${path}"]`)).toHaveCount(0);
+  }
+  const hiddenArrays = [
+    "camera.filter_uv",
+    "camera.filter_ir",
+    "film_render.grain.micro_structure",
+    "film_render.grain.agx_particle_scale_layers",
+    "film_render.dir_couplers.gamma_samelayer_rgb",
+    "film_render.dir_couplers.gamma_interlayer_r_to_gb",
+    "film_render.dir_couplers.gamma_interlayer_g_to_rb",
+    "film_render.dir_couplers.gamma_interlayer_b_to_rg",
+    "io.crop_center",
+    "io.crop_size",
+  ];
+  for (const path of hiddenArrays) {
+    await expect(page.locator(`[data-setting^="${path}"]`)).toHaveCount(0);
+  }
+  // Their editable siblings must survive: hiding is targeted at engine-controlled leaves,
+  // not at whole sections of the panel.
+  for (const path of ["film_render.dir_couplers.amount", "print_render.density_curves_morph.gamma_factor_fast"]) {
+    await expect(page.locator(`[data-setting="${path}"][type="number"]`)).toHaveCount(1);
   }
   const grainSeed = page.locator('[data-setting="film_render.grain.seed"][type="number"]');
   await grainSeed.fill("12.5");
@@ -708,4 +752,39 @@ test("exports the same photo twice without reopening it", async ({ page }) => {
     await expect(page.locator("#engine-state")).toContainText("Local engine", { timeout: 60_000 });
     await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
   }
+});
+
+test("refuses a saved recipe with an unknown settings key without stranding the engine", async ({ page }) => {
+  await ready(page);
+  await page.locator("#file-input").setInputFiles({ name: "poisoned-recipe.jpg", mimeType: "image/jpeg", buffer: jpeg });
+  await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+  await expect(page.getByRole("button", { name: "Show before" })).toBeVisible({ timeout: 3 * 60_000 });
+  await page.locator(".controls > details > summary").click();
+
+  await page.locator("#recipe-name").fill("Poisoned recipe");
+  await page.locator("#save-recipe").click();
+  await expect(page.locator("#saved-recipes option")).toContainText(["Saved recipes…", "Poisoned recipe"]);
+
+  // Simulate a recipe saved by an older build (or hand-edited storage) that carries a
+  // settings key the current contract no longer knows.
+  await page.evaluate(() => {
+    const recipes = JSON.parse(localStorage.getItem("spektra-recipes") as string);
+    recipes[0].settings.mystery_setting = true;
+    localStorage.setItem("spektra-recipes", JSON.stringify(recipes));
+  });
+
+  await page.evaluate(() => { document.querySelector("#toast")!.textContent = ""; });
+  await page.locator("#saved-recipes").selectOption("0");
+
+  // The bad recipe must be refused with a toast instead of silently poisoning live state.
+  await expect(page.locator("#toast")).toContainText("mystery_setting");
+
+  // Live state must be unharmed: an ordinary edit right after the refused recipe still
+  // has to reach the engine and change the rendered preview, instead of being stranded
+  // behind a settings tree the engine can no longer configure.
+  const before = await displayedImage(page);
+  await page.locator("#warmth").fill("20");
+  await expect.poll(() => page.locator("#preview-image").getAttribute("src"), { timeout: 3 * 60_000 }).not.toBe(before.src);
+  const after = await displayedImage(page);
+  expect(after.hash).not.toBe(before.hash);
 });
