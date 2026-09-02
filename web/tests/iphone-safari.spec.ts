@@ -71,6 +71,20 @@ function encodedDimensions(bytes: Buffer, format: "jpeg" | "png" | "tiff") {
   return { width, height };
 }
 
+// Playwright's WebKit build on Linux has no WebGPU: navigator.gpu is absent, and there is no
+// flag or preference that turns it on — a Chromium-style --enable-webgpu makes WebKit exit.
+// The app requires WebGPU, so it stops at "WebGPU required" and every test below fails at its
+// first assertion, before reaching any application behaviour. Skip there rather than report a
+// failure the environment cannot avoid; wherever WebGPU exists — macOS, and the production
+// smoke run in scripts/deploy-cloudflare.sh — the whole suite still runs as before.
+//
+// The probe must happen on the app's own origin: navigator.gpu is not exposed on about:blank
+// even in a browser that has it, so checking before navigating would skip everywhere.
+test.beforeEach(async ({ page }) => {
+  await page.goto("/");
+  test.skip(!(await page.evaluate(() => "gpu" in navigator)), "browser has no WebGPU; the engine cannot start");
+});
+
 test("fits the iPhone Safari viewport and exposes distinct photo and RAW filters", async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(navigator, "mediaDevices", {
     configurable: true,
