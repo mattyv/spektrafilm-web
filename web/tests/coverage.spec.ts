@@ -120,6 +120,26 @@ test("handles invalid images and approves an oversized mobile photo", async ({ p
   await expect(page.getByRole("button", { name: "Show before" })).toBeVisible({ timeout: 3 * 60_000 });
 });
 
+test("exports a Reference JPEG from the mobile preview source", async ({ page }) => {
+  // On mobile, a Reference export of a non-RAW photo re-reads the bounded preview blob
+  // instead of the original file, and scales from the preview's megapixels rather than the
+  // full image. Only this combination — not desktop, Reference, not RAW — takes that
+  // branch, so without a test for it the mobile export sizing is never exercised.
+  await page.addInitScript(() => Object.defineProperty(navigator, "userAgent", { value: "iPhone", configurable: true }));
+  await ready(page);
+  await page.locator("#photo-input").setInputFiles({ name: "mobile.jpg", mimeType: "image/jpeg", buffer: jpeg });
+  await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+  await page.getByRole("button", { name: "Reference Quality", exact: true }).click();
+  await page.locator("#output-format").selectOption("jpeg");
+  await expect(page.locator("#export")).toBeEnabled({ timeout: 60_000 });
+  const pending = page.waitForEvent("download");
+  await page.locator("#export").click();
+  const exported = await pending;
+  expect(exported.suggestedFilename()).toBe("mobile-spektra.jpg");
+  expect([...readFileSync((await exported.path())!).subarray(0, 2)]).toEqual([0xff, 0xd8]);
+  await expect(page.locator("#toast")).toContainText("Reference Quality export complete");
+});
+
 test("exports an edited vignetted Reference JPEG in Electron", async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(navigator, "userAgent", { value: "SpektraElectron", configurable: true }));
   await ready(page);
